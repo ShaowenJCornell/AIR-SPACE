@@ -1,0 +1,105 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-01-20"
+---
+
+```{r}
+options(stringsAsFactors = F)
+library(dplyr)
+library(stringr)
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+library(Biostrings)
+library(tidyr)
+library(stringdist)
+library(cowplot)
+library(immunarch)
+library(conflicted)
+library(tidyverse)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflicts_prefer(base::as.data.frame)
+# save.image("../output_files/Rimage/Fig_GC_egress.RData")
+load("../output_files/Rimage/Fig_GC_egress.RData")
+```
+
+```{r}
+gc_meta = read.csv("../output_files/adata_D14_GC1_meta.csv", header = T)
+gc_meta = gc_meta %>% filter(LZDZ_domain %in% c("LZ","DZ"))
+gc_meta$Dist_LZDZ_boundary = gc_meta$Dist_LZDZ_boundary/1.54
+# we also have centroid
+
+dom_col_vec = c("LZ" = "blue", "DZ" = "red")
+axis_led_size = 8;axis_text_size = 6
+legnd_tit_size = 8;legnd_text_size = 6
+```
+
+## Supp Figures: Lineplots on quantites and distance away from LZ-DZ boundary
+```{r}
+# set up x_axis scale
+# add Cxcl12 & Cxcl13
+gc_meta_tmp = gc_meta
+gc_meta_tmp$distance = abs(gc_meta_tmp$Dist_LZDZ_boundary)
+# for (g in c("ge_Cxcl13","ge_Cxcl12","G2M_score","S_score",'IGH_MutCount','IGH_MutFreq',"IGH_CDR3Len","num_IGH_umi","num_clones_IGH","num_clones_IGK")){
+#   if (grepl("IGH",g)){
+#   gc_meta_tmp = gc_meta_tmp %>% mutate(!!g := if_else(is.na(num_clones_IGH), NA, !!sym(g)))}
+#   else {gc_meta_tmp = gc_meta_tmp %>% mutate(!!g := if_else(is.na(num_clones_IGK), NA, !!sym(g)))}
+# gp = ggplot(gc_meta_tmp, aes_string(x = "distance", y = g, color='LZDZ_domain')) + geom_smooth(method='loess') + xlab("distance from boundary(um)")+ ylab(g)+ xlab("") + 
+#   xlim(0,250) + scale_x_continuous(breaks = c(0,100,200)) +
+#   scale_color_manual(values = c("LZ" = "blue", "DZ" = "red")) + theme_bw() + theme( axis.text = element_text(size = axis_text_size), axis.title = element_text(size = axis_led_size), legend.position = "None")
+# print(gp)
+# ggsave(gp, width = 1.5,height = 1,dpi = 600,filename = paste0("./figures/Individual_GCs/D14PI_GC1/lineplot_",g,".pdf"))
+# }
+### Grid
+plotlist = list()
+int_cols = c("ge_Cxcl13","ge_Cxcl12","G2M_score","S_score","num_clones_IGH","IGH_MutFreq","num_clones_IGK","IGK_MutFreq")
+for (i in int_cols){ # CDR3Len looks weird
+# i = "G2M_score"
+  # gc_meta_tmp = gc_meta_tmp %>% mutate(!!g := if_else(is.na(num_clones_IGH), NA, !!sym(g)))
+    if (grepl("IGH",i)){
+  gc_meta_tmp = gc_meta_tmp %>% mutate(!!i := if_else(is.na(num_clones_IGH), NA, !!sym(i)))}
+  else {gc_meta_tmp = gc_meta_tmp %>% mutate(!!i := if_else(is.na(num_clones_IGK), NA, !!sym(i)))}
+  clean_y_axis_name = str_replace(i, "_"," ")
+gp = ggplot(gc_meta_tmp, aes_string(x = "distance", y = i, color='LZDZ_domain')) + geom_smooth(method='loess') + xlab("distance from boundary(um)")+ ylab(clean_y_axis_name)+ xlab("") + xlim(0,250) + scale_x_continuous(breaks = c(0,100,200)) +
+  scale_color_manual(values = dom_col_vec) + theme_bw() + theme( axis.text = element_text(size = axis_text_size), axis.title = element_text(size = axis_led_size), legend.position = "None")
+print(gp)
+if (i == "IGH_MutFreq"){
+  # set up ticks
+  gp = ggplot(gc_meta_tmp, aes_string(x = "distance", y = i, color='LZDZ_domain')) + geom_smooth(method='loess') + xlab("distance from boundary(um)")+ ylab(clean_y_axis_name)+ xlab("") + xlim(0,250) + scale_x_continuous(breaks = c(0,100,200)) +
+    scale_y_continuous(breaks = c(0.000,0.002,0.004)) + scale_color_manual(values = dom_col_vec) + theme_bw() + theme( axis.text = element_text(size = axis_text_size), axis.title = element_text(size = axis_led_size), legend.position = "None")
+print(gp)
+}
+plotlist[[i]] = gp
+# ggsave(gp, width = 2,height = 1.5,dpi = 600,filename = paste0("../figures/Fig4_GC/lineplot_",i,".pdf"))
+}
+fig = plot_grid(plotlist = plotlist, ncol = 2, nrow =4,align = 'v')
+pdf(file = "./figures/Individual_GCs/D14PI_GC1/Lineplot_D14GC1_DZLZ_grid.pdf",width = 3.2,height = 4.4)
+print(fig)
+dev.off()
+```
+
+## Supp Figures: boxplot on LZ DZ comparison
+```{r}
+# Grid figure
+int_genes = c("ge_Cxcl13","G2M_score","ge_Aicda","ge_Cxcl12","ge_Bcl2a1b","ge_Mfge8") # Let's make it a 2x2 gene exp
+# use cowplot
+# int_genes = int_genes[1:6]
+plotlist = list()
+for (i in int_genes) {
+  g = str_remove(i,pattern = "ge_")
+my_comparisons <- list(c("LZ","DZ"))
+clean_y_axis_name = str_remove(i,"ge_")
+clean_y_axis_name = str_replace(clean_y_axis_name, "_"," ")
+p <- ggboxplot(gc_meta_tmp, x = "LZDZ_domain", y = i, color = "LZDZ_domain", add = "jitter", title = "",size = 0.5,add.params = list(size = 0.1),width = 0.8) + labs(y = clean_y_axis_name)
+p <- p + stat_compare_means(comparisons = my_comparisons, method = "wilcox.test",size = 1) + xlab("") +scale_color_manual(values = dom_col_vec) + theme_bw() + theme( axis.text = element_text(size = axis_text_size), axis.title = element_text(size = axis_led_size), legend.position = "None") # top, right, bottom, left
+plotlist[[i]] = p
+}
+fig = plot_grid(plotlist = plotlist, ncol = 3, nrow =2)
+pdf(file = "./figures/Individual_GCs/D14PI_GC1/boxplot_D14GC1_DZLZ_grid.pdf",width = 3.6,height = 3)
+print(fig)
+dev.off()
+```
+
+

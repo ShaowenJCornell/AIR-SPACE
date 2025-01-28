@@ -1,0 +1,344 @@
+
+
+```{r}
+options(stringsAsFactors = F)
+library(dplyr)
+library(stringr)
+library(reshape2)
+library(ggplot2)
+library(Biostrings)
+library(tidyr)
+library(stringdist)
+library(cowplot)
+library(RColorBrewer)
+# library(ggthemr)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflicted::conflicts_prefer(base::setdiff)
+conflicts_prefer(base::intersect)
+
+theme_cleveland2 <- function(rotate = TRUE) {
+  if (rotate) {
+    theme(
+      panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+      panel.grid.major.y = element_line(
+        colour = "grey70",
+        linetype = "dashed"
+      )
+    )
+  } else {
+    theme(
+      panel.grid.major.x = element_line(
+        colour = "grey70",
+        linetype = "dashed"
+      ), panel.grid.major.y = element_blank(),
+      panel.grid.minor.y = element_blank()
+    )
+  }
+}
+
+ifng_niche_color = c("Inner" = "blue", "Outer" = "red", "Control" ='#FF8F00')
+sample_col_vec = c("Mock"="#1f77b4","D3"="#9CA327","D7"="#ff7f0e","D10"="#2ca02c","D14"="#d62728","D21"="#9467bd")
+axis_led_size = 8;axis_text_size = 6
+legnd_tit_size = 8;legnd_text_size = 6
+
+# save image
+save.image("../output_files/Rimage/Fig_Ifng_niche.RData")
+# load("../output_files/Rimage/Fig_Ifng_niche.RData")
+```
+
+```{r}
+meta = read.csv("../output_files/Fig_IFNG/adata_D3PI_Niches_wIfng_dist.csv",header = T)
+# meta_scale = read.csv("../output_files/adata_D3PI_Niches_wIfng_corr_genes.csv")
+# load CD4 and CD8
+meta_cdT = read.csv("../output_files/adata_D3PI_TCD48_prob.csv",header = T) # from pLN_figure5_workflow_Sep_Tcell.ipynb 
+
+```
+
+# Figure: a bar plot showing the expressison of Ifng
+```{r}
+ifng_exp = read.csv("../output_files/Fig_IFNG/adata_allTP_Ifng_umi.csv",header = T)
+# 
+plot_df = ifng_exp %>% group_by(Sample) %>% summarise(Ifng_umi = sum(ge_Ifng))
+plot_df$Sample = c("D10","D14","D21","D3","D7","Mock")
+plot_df$Sample = factor(plot_df$Sample, levels = c("Mock","D3","D7","D10","D14","D21"))
+plt = ggplot(plot_df, aes(x = Sample, y = Ifng_umi, fill = Sample)) + geom_bar(stat = "identity", position = position_dodge(),col = NA) + scale_fill_manual(values = sample_col_vec) + labs(y = "Ifng UMI")  + 
+  theme_bw() + theme(axis.title.x = element_blank(),axis.text.x = element_text(size = axis_text_size), axis.text.y = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size),legend.position = "none")
+plt
+# save
+ggsave(plt, filename = paste0("./figures/Ifng_Niche/IFNG_UMI_exp_allTP.pdf"),width = 1.8,height = 1,dpi = 600)
+```
+
+
+# niches organization: group into Inner Outer and Control 
+```{r}
+dflist = list()
+for (i in c(0,1,2,3,4,"C","InLow")) {
+  col = paste0("distance_w",i)
+  if(i == "C"){sub_meta = meta %>% filter(Ifng_group == "Ifng_within_C")} else if (i == "InLow") {sub_meta = meta %>% filter(Ifng_group == "Ifng_within_in_low")} else {sub_meta = meta %>% filter(Ifng_group == paste0("Ifng_within_",i))}
+  sub_meta$distance = sub_meta[,col]
+  sub_meta = sub_meta %>% mutate(group = paste0("group",i)) %>% select(Index, distance,group,starts_with("ge_"),ends_with("_prob"),ends_with("_score"))
+  dflist[[paste0("group",i)]] = sub_meta
+}
+combdf = do.call('rbind',dflist) # 2540
+combdf$distance = combdf$distance/1.54
+
+# rename the group_v2
+combdf = combdf %>% mutate(group_v2 = if_else(group == "groupInLow", "Inner",
+                                              if_else(group == "groupC", "Control",
+                                                      if_else(group %in% c("group0","group1","group2"), "Outer", "Inner"))))
+table(combdf$group_v2) # correct
+combdf$group_v2 = factor(combdf$group_v2, levels = c("Inner","Outer","Control"))
+table(combdf$group_v2)
+```
+
+
+# Fig: Smooth Line plot on Ifng Gene expression
+```{r}
+# read the normalized Ifng expression level
+meta_norm = read.csv("../output_files/Fig_IFNG/adata_D3PI_norm_Ifng.csv")
+combdf = combdf %>% left_join(meta_norm, by = "Index")
+
+int_genes = colnames(combdf)[grepl("ge_",colnames(combdf))]
+for (i in int_genes) {
+  g = str_remove(i,pattern = "ge_norm_")
+  
+  gp = ggplot(combdf, aes_string(x = "distance", y = i, color='group_v2')) + geom_smooth(method='loess') + xlab("distance from centroid(um)")+ ylab(g)  +theme_bw() + scale_color_manual(values = ifng_niche_color) + theme_bw() + theme(legend.position = "none",axis.title.x = element_blank(),axis.text = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size))
+  print(gp)
+  ggsave(gp, filename = paste0("./figures/Ifng_Niche/NoTitle_Ifng_niche_Exp_",g,".pdf"),width = 1.5,height = 1.3,dpi = 600)
+}
+```
+
+
+# Fig: Heatmap on highly correlated genes of different niches
+```{r}
+library(ComplexHeatmap)
+library(circlize)
+library(dendextend)
+scale_row = function (x) 
+{
+    m = apply(x, 1, mean, na.rm = T)
+    s = apply(x, 1, sd, na.rm = T)
+    return((x - m)/s)
+}
+FixScale <- function (mydata, min, max){
+      Mydat <- mydata
+      Mydat[Mydat > max] <- max
+      Mydat[Mydat < min] <- min
+      return(Mydat)}
+
+col_fun = colorRamp2(c(-0.5, 0, 1),c("blue" ,"white", "red"))
+```
+
+
+```{r}
+meta_scale = read.csv("../output_files/Fig_IFNG/adata_D3PI_Niches_wIfng_corr_genes.csv") # 137 genes from github_pub/notebooks/Python_Figure_Ifng_codes.ipynb
+combdf_scale = combdf %>% select(Index, distance, group_v2) %>% left_join(meta_scale, by = "Index")
+meta_scale = read.csv("../output_files/Fig_IFNG/adata_D3PI_scale_Ifng.csv")
+combdf_scale = combdf_scale  %>% left_join(meta_scale, by = "Index")
+int_genes = colnames(combdf_scale)[grepl("ge_",colnames(combdf_scale))]
+# int_genes = int_genes[!grepl(pattern = ".[x|y]",int_genes)]
+smooth_list = list()
+for (i in int_genes) {
+  # i = paste0("ge_scale_",g)
+  g = str_remove(i, "ge_scale_")
+  gp = ggplot(combdf_scale, aes_string(x = "distance", y = i, color='group_v2')) + geom_smooth(method='loess') + xlab("distance from centroid(um)")+ ylab(g)  +theme_bw() + scale_color_manual(values = ifng_niche_color) + theme_bw() + theme(legend.position = "none",axis.title.x = element_blank(),axis.text = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size))
+  smooth_data = ggplot_build(gp)$data[[1]] 
+  # print(table(smooth_data$group, smooth_data$colour))
+  smooth_data = smooth_data %>% select(x, y, group) %>% mutate(gene = g)
+  print(g)
+  smooth_list[[g]] = smooth_data
+  # break
+}
+print(table(smooth_data$group))
+smooth_combdf = do.call('rbind',smooth_list)
+inner_sm = smooth_combdf %>% filter(group == 1)
+outer_sm = smooth_combdf %>% filter(group == 2)
+control_sm = smooth_combdf %>% filter(group == 3)
+```
+
+```{r}
+sele_genes = readLines("../output_files/Fig_IFNG/Ifng_niche_select_genes.txt")
+sele_genes_order = c("Gzma","Cxcl10","Xcl1","Cxcl9","Gzmb","Cst3","Calm1","Ccl4","Ccl5","Ccl2",
+              "Ccl22","Bcl2a1b","Eif2s2","Nfkbia","Eif5a","Eif4a3","Bcl2a1d","Ccr7","Myd88","Il1rn","Irf4","Eif1a","Hk2","Nfkbib","Prf1")
+new_sele_genes = c(sele_genes_order, setdiff(sele_genes, sele_genes_order))
+genes_rm = c("Batf2","Bcl2l1","Cyth2","Elmo1","Eloa","Il18rap","Il1r2","Inf2","Lif","Nfil3")
+new_sele_genes_order = setdiff(new_sele_genes, genes_rm)
+new_sele_genes_order = unique(c("Ifng", new_sele_genes_order))
+```
+Plot
+```{r}
+# Outer
+data_wide <- outer_sm %>% 
+  arrange(gene, x) %>%  # Sort by gene and x
+  select(gene, x, y) %>% # Select relevant columns
+  pivot_wider(names_from = x, values_from = y) # Pivot to wide format
+colnames(data_wide) = c('gene', seq(1,80))
+data_matrix <- as.matrix(data_wide[, -1]) # Remove gene column for matrix conversion
+rownames(data_matrix) <- data_wide$gene
+
+data_matrix_scaled <- data_matrix %>% FixScale(min = -0.5, max = 1)
+data_matrix_scaled = data_matrix_scaled[new_sele_genes_order,]
+out_ht = Heatmap(data_matrix_scaled,
+        name = "Expression", # Name for the legend
+        col = col_fun, # Color scale
+        cluster_rows = F, # Cluster genes (rows)
+        cluster_columns = FALSE, # Do not cluster columns (time points)
+        show_row_names = TRUE,
+        show_column_names = FALSE,
+        row_names_side = "left", row_names_gp = gpar(fontsize = 4),show_heatmap_legend = F)
+# pdf(paste0("../figures/Ifng_Niche/Heatmap_AutoCorr_select_Scale_GeneExp_Outer.pdf"),width = 2, height = 4)
+# draw(out_ht)
+# dev.off()
+row_order_indices <- row_order(out_ht)
+outer_ordered_genes <- rownames(data_matrix_scaled)[unlist(row_order_indices)]
+
+# Inner
+data_wide <- inner_sm %>% 
+  arrange(gene, x) %>%  # Sort by gene and x
+  select(gene, x, y) %>% # Select relevant columns
+  pivot_wider(names_from = x, values_from = y) # Pivot to wide format
+colnames(data_wide) = c('gene', seq(1,80))
+data_matrix <- as.matrix(data_wide[, -1]) # Remove gene column for matrix conversion
+rownames(data_matrix) <- data_wide$gene
+
+data_matrix_scaled <- data_matrix %>% FixScale(min = -0.5, max = 1)
+data_matrix_scaled = data_matrix_scaled[new_sele_genes_order,]
+in_ht = Heatmap(data_matrix_scaled,
+        name = "Expression", # Name for the legend 
+        col = col_fun, # Color scale
+        cluster_rows = FALSE, # Cluster genes (rows)
+        cluster_columns = FALSE, # Do not cluster columns (time points)
+        show_row_names = TRUE,
+        show_column_names = FALSE,
+        row_names_side = "left", row_names_gp = gpar(fontsize = 4),show_heatmap_legend = F)
+# pdf(paste0("../figures/Ifng_Niche/Heatmap_AutoCorr_select_Scale_GeneExp_Inner.pdf"),width = 2, height = 4)
+# draw(in_ht)
+# dev.off()
+row_order_indices <- row_order(in_ht)
+inner_ordered_genes <- rownames(data_matrix_scaled)[unlist(row_order_indices)]
+
+# Control
+data_wide <- control_sm %>%
+  arrange(gene, x) %>%  # Sort by gene and x
+  select(gene, x, y) %>% # Select relevant columns
+  pivot_wider(names_from = x, values_from = y) # Pivot to wide format
+colnames(data_wide) = c('gene', seq(1,80))
+data_matrix <- as.matrix(data_wide[, -1]) # Remove gene column for matrix conversion
+rownames(data_matrix) <- data_wide$gene
+
+data_matrix_scaled <- data_matrix %>% FixScale(min = -0.5, max = 1)
+data_matrix_scaled = data_matrix_scaled[new_sele_genes_order,]
+ct_ht = Heatmap(data_matrix_scaled,
+        name = "Expression", # Name for the legend 
+        col = colorRamp2(c(min(data_matrix_scaled, na.rm = TRUE), 0, max(data_matrix_scaled, na.rm = TRUE)),
+                         c("blue" ,"white", "red")), # Color scale
+        cluster_rows = F, # Cluster genes (rows)
+        cluster_columns = FALSE, # Do not cluster columns (time points)
+        show_row_names = TRUE,
+        show_column_names = FALSE,
+        row_names_side = "left", row_names_gp = gpar(fontsize = 4),show_heatmap_legend = F)
+        # row_names_side = "left", row_names_gp = gpar(fontsize = 4),show_heatmap_legend = T)
+# pdf(paste0("../figures/Ifng_Niche/Heatmap_AutoCorr_select_Scale_GeneExp_Control.pdf"),width = 2, height = 4)
+# draw(ct_ht)
+# dev.off()
+
+ht_list <- out_ht + in_ht + ct_ht
+
+pdf(paste0("./figures/Ifng_Niche/Heatmap_AutoCorr_select_Scale_GeneExp_OutInControl.pdf"),width =3, height = 2)
+draw(ht_list)
+dev.off()
+```
+
+
+
+# Fig: V-segment composition
+```{r}
+# read TCR data
+load("../output_files/objects/Mixcr_comb_ovp_clone_table.Robj") # ovp_comb_clone
+# trb_comb_clone = ovp_comb_clone %>% filter(clono_type == "TRBC" & Sample == "D3PI")
+trb_comb_clone = ovp_comb_clone %>% filter(receptor_type == "TRB" & Sample == "D3PI")
+ifng_trb_clone = trb_comb_clone %>% filter(Index %in% combdf$Index) # 464
+
+ifng_trb_clone = trb_comb_clone %>% inner_join(combdf[,c("Index","group_v2","distance")]) %>% mutate(group = group_v2)
+# Check J-segments
+ifng_trb_clone$V_seg_detail = sapply(strsplit(ifng_trb_clone$allVHitsWithScore, "*00",fixed=T),"[",1)
+ifng_trb_clone$V_seg = sapply(strsplit(ifng_trb_clone$V_seg_detail, "-",fixed=T),"[",1)
+ifng_trb_clone$J_seg_detail = sapply(strsplit(ifng_trb_clone$allJHitsWithScore, "*00",fixed=T),"[",1)
+ifng_trb_clone$J_seg = sapply(strsplit(ifng_trb_clone$allJHitsWithScore, "-",fixed=T),"[",1)
+# select the one with TRBV13-3
+sele_ifng_trb_clone = ifng_trb_clone %>% filter(V_seg_detail %in% c("TRBV13-3", "TRBV4"))
+# filter out duplicate reads
+sele_ifng_trb_clone = sele_ifng_trb_clone %>% select(cloneId, group,Index,V_seg_detail) %>% unique()
+
+combdf$int_TCR_Vsegment = 0
+for (i in 1:nrow(combdf)) {
+  ind = combdf[i,"Index"]
+  tmp_trb = sele_ifng_trb_clone %>% filter(Index==ind)
+  ct = nrow(tmp_trb)
+  combdf[i,"int_TCR_Vsegment"] = ct
+}
+
+tmplist = list()
+for (i in c("Inner","Outer","Control")) {
+  # gp = paste0("Ifng_",i)
+  # if (i == "Control"){gp = "Control"}
+  tmp_combdf = combdf %>% filter(group_v2 == i) %>% arrange(distance)
+  tmp_combdf$TCR_Vcount = cumsum(tmp_combdf$int_TCR_Vsegment)
+  tmplist[[i]] = tmp_combdf
+}
+comb_tcr = do.call('rbind',tmplist)
+comb_tcr$group_v2 = factor(comb_tcr$group_v2, levels = c("Inner","Outer","Control"))
+```
+
+Plot in both TRBC13-3 & TRBV4 segments
+```{r}
+# absolute count
+comb_tcr_count = comb_tcr
+gp = ggplot(comb_tcr_count, aes(x=distance, y=TCR_Vcount,color = group_v2)) + geom_line(size=1) + xlab("distance from centroid(um)") + ylab("TRBV13-3 & TRBV4 Count") + scale_color_manual(values = ifng_niche_color) + theme_bw() + theme(legend.position = "none",axis.title.x = element_blank(),axis.text = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size))
+ggsave(gp, filename = paste0("./figures/Ifng_Niche/Ifng_niche_TRBV134_count.pdf"),width = 1.3,height = 1,dpi = 600)
+
+# Percentage
+# from the combdf above, make the "int_TCR_Vsegment" into percentage
+unq_all_ifng_trb_clone = ifng_trb_clone %>% select(cloneId, group, Index, V_seg_detail) %>% unique()
+unq_trb_count = as.data.frame(table(unq_all_ifng_trb_clone$group))
+combdf = combdf %>% mutate(int_TCR_Vsegment_perc = if_else(group_v2 == "Control", int_TCR_Vsegment / unq_trb_count[unq_trb_count$Var1=='Control',2],
+                                                           if_else(group_v2 == "Inner", int_TCR_Vsegment / unq_trb_count[unq_trb_count$Var1=='Inner',2], 
+                                                                           int_TCR_Vsegment / unq_trb_count[unq_trb_count$Var1=='Outer',2])))
+
+tmplist = list()
+for (i in c("Inner","Outer","Control")) {
+  # gp = paste0("Ifng_",i)
+  # if (i == "Control"){gp = "Control"}
+  tmp_combdf = combdf %>% filter(group_v2 == i) %>% arrange(distance)
+  tmp_combdf$TCR_Vperc = cumsum(tmp_combdf$int_TCR_Vsegment_perc) * 100
+  tmplist[[i]] = tmp_combdf
+}
+comb_tcr = do.call('rbind',tmplist)
+comb_tcr$group_v2 = factor(comb_tcr$group_v2, levels = c("Control","Outer","Inner"))
+# setup tip label
+gp = ggplot(comb_tcr, aes(x=distance, y=TCR_Vperc,color = group_v2)) + geom_line(size=1) + xlab("distance from centroid(um)") + ylab("TRBV13-3 & TRBV4 Composition(%)")+ scale_color_manual(values = ifng_niche_color) + scale_y_continuous(breaks = c(0,5,10)) +
+  theme_bw() + theme(legend.position = "none",axis.title.x = element_blank(),axis.text = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size))
+ggsave(gp, filename = paste0("./figures/Ifng_Niche/Ifng_niche_TRBV4&13-3_InOutControl_Perc.pdf"),width = 1.5,height = 1.3,dpi = 600)
+```
+
+Plot in all composition
+```{r}
+library(ggpubr)
+# need to unique on the barcode
+unq_ifng_trb_clone = ifng_trb_clone %>% select(Index, group_v2, cloneId, V_seg,V_seg_detail, J_seg_detail,J_seg,aaSeqCDR3) %>% filter(!grepl("_",aaSeqCDR3)) %>% unique() # 250 remove the unproductive ones
+vseg_df = as.data.frame(table(unq_ifng_trb_clone$group_v2, unq_ifng_trb_clone$V_seg_detail))
+perc_vseg_df = vseg_df %>% group_by(Var1) %>% mutate(perc = Freq / sum(Freq) * 100)
+perc_vseg_df$Var1 = factor(perc_vseg_df$Var1, levels = c("Inner","Outer","Control"))
+# reorder the Vseg
+chrom_order <- c("TRBV1", "TRBV2", "TRBV3", "TRBV4", "TRBV5", "TRBV12-1", "TRBV12-2", 
+                 "TRBV13-1", "TRBV13-2", "TRBV13-3", "TRBV14", "TRBV15", "TRBV16",
+                 "TRBV17", "TRBV19", "TRBV20", "TRBV23", "TRBV26", "TRBV29", "TRBV30", "TRBV31")
+perc_vseg_df$Var2 = factor(perc_vseg_df$Var2, levels = chrom_order)
+# Barplot
+plt = ggplot(perc_vseg_df, aes(x = Var2, y = perc, fill = Var1)) + geom_bar(stat = "identity", position = position_dodge(),col = NA)  + xlab('') + ylab('V segment composition(%)') + scale_fill_manual(values = ifng_niche_color)+ theme_bw() + rotate_x_text(90) + theme_cleveland2() + theme(legend.position = "none",axis.title.x = element_blank(),axis.text = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size))
+plt
+# ggsave(plt, filename = "../figures/Ifng_Niche/Ifng_niche_V_segment_composition.pdf",width = 3,height = 1.5)
+ggsave(plt, filename = "./figures/Ifng_Niche/Ifng_niche_V_segment_composition_2025.pdf",width = 4,height = 1.5)
+```
+

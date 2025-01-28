@@ -1,0 +1,219 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-01-14"
+---
+
+```{r}
+options(stringsAsFactors = F)
+library(dplyr)
+library(stringr)
+library(reshape2)
+library(ggplot2)
+# library(Biostrings)
+library(tidyr)
+library(tibble)
+library(stringdist)
+library(cowplot)
+library(ComplexHeatmap)
+library(circlize)
+library(conflicted)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+# extrafont::loadfonts()
+library(splitstackshape)
+```
+
+Read the meta
+```{r}
+# meta = read.csv("../output_files/adata_comb_allTP_whole_meta.csv",header = T)
+# previous meta
+meta = read.csv("../output_files/adata_comb_allTP_whole_meta.csv",header = T)
+# load gene expression
+gene_meta = read.csv("../output_files/AllTP_GeneExp_table.tsv",header = T,sep = "\t") # Aicda exp norm & log1p
+# save the image
+# save.image("../output_files/LR_Fig3_largeHeatmap_Jan2025.RData")
+load("../output_files/Rimage/LR_Fig3_largeHeatmap_Jan2025.RData")
+```
+
+Organize the data
+```{r}
+# # new_meta = meta %>% select(Index,Sample,phase:Region,starts_with("num_clones"),IGHM_M:IGHA_M,ends_with("MutFreq"),ends_with("MutCount"),ends_with("CDR3Len"),matches("num_IGH(G1|G3|G2B|G2C|M|D|E|A)_umi")) %>% left_join(gene_meta) %>% mutate(IGHM = num_IGHM_umi, IGHD = num_IGHD_umi, IGHG3 = num_IGHG3_umi, IGHG1 = num_IGHG1_umi, IGHG2B = num_IGHG2B_umi, IGHG2C = num_IGHG2C_umi,IGHE = num_IGHE_umi, IGHA = num_IGHA_umi) %>% mutate(sum_IGH_umi = rowSums(select(., matches("num_IGH(G1|G3|G2B|G2C|M|D|E|A)_umi")),na.rm = T)) %>% mutate(is_isotype = ifelse(sum_IGH_umi == 0, 0,1))
+# new_meta = meta %>% select(Index,Sample,phase:Region,starts_with("num_clones"),IGHM_M:IGHA_M,ends_with("MutFreq"),ends_with("MutCount"),ends_with("CDR3Len"),matches("num_IGH(G1|G3|G2B|G2C|M|D|E|A)_umi")) %>% left_join(gene_meta) %>% mutate(IGHM = num_IGHM_umi, IGHD = num_IGHD_umi, IGHG3 = num_IGHG3_umi, IGHG1 = num_IGHG1_umi, IGHG2B = num_IGHG2B_umi, IGHG2C = num_IGHG2C_umi,IGHE = num_IGHE_umi, IGHA = num_IGHA_umi) %>% mutate(sum_IGH_umi = rowSums(select(., matches("num_IGH(G1|G3|G2B|G2C|M|D|E|A)_umi")),na.rm = T)) %>% mutate(is_isotype = ifelse(sum_IGH_umi == 0, 0,1))
+# # write.csv(comb_df,row.names = F,file = "../output_files/AllTP_meta_ovp.tsv")
+# # comb_df = read.csv("../output_files/AllTP_meta_ovp.tsv")
+# # comb_df = comb_df %>% select(Index, num_ONT_reads:TRB_CDR3Len) # comb_df
+# # merge
+# # new_meta = new_meta %>% left_join(comb_df, by = "Index")
+# # Add column M & S
+# new_meta <- new_meta %>% 
+#   mutate(
+#     Membrane = rowSums(across(ends_with("_M"), ~ ifelse(is.na(.x), 0, 1))),
+#     Secreted = rowSums(across(ends_with("_S"), ~ ifelse(is.na(.x), 0, 1))),
+#     across(IGHM_M:IGHE_S, ~ ifelse(is.na(.x), NA, 1))
+#   )
+# new_meta = new_meta %>% mutate(Membrane = ifelse(Membrane == 0, 0, 1), Secreted = ifelse(Secreted == 0, 0, 1))
+# # new_meta = new_meta %>% mutate(is_isotype = ifelse(Membrane == 0 & Secreted == 0, 0, 1))
+# # new_meta_igh for downsample
+# new_meta_igh = new_meta %>% filter(num_clones_IGH > 0 & is_isotype == 1)
+# new_meta_igh$Region = factor(new_meta_igh$Region, levels = c("Medulla","Outer Cortex","Inner Cortex","Germinal Center","Fat Tissue","Afferent lymph vessel","Capsule","Conduit"))
+# new_meta_igh$Sample = factor(new_meta_igh$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+new_meta_igh = read.delim("../output_files/Meta_igh_heatmap.tsv")
+```
+
+Summary for the new_meta_igh information
+MutFreq, isotypes, CDR3 Len, cell cycle phase, Region, 
+```{r}
+# get some stat
+mean_stat_df = new_meta_igh %>% group_by(Sample) %>% summarise(Mean_MutFreq = mean(IGH_MutFreq),Mean_CDR3Len = mean(IGH_CDR3Len))
+mean_stat_df
+med_stat_df = new_meta_igh %>% group_by(Sample) %>% summarise(Med_MutFreq = median(IGH_MutFreq),Med_CDR3Len = median(IGH_CDR3Len))
+med_stat_df
+# would in D14 & D21, the beads with IGHM/D have lower CDR3 Len?
+len_stat = new_meta_igh %>% filter(Sample %in% c("D14PI","D21PI")) %>% mutate(naive = if_else(!is.na(IGHM_M)|!is.na(IGHD_M)|!is.na(IGHM_S)|!is.na(IGHD_S), 1, 0)) %>% select(Sample, Region, IGH_CDR3Len, naive) %>% mutate(non_naive = if_else(naive == 1, 0,1))
+
+len_stat_summary <- len_stat %>% filter(Region %in% c("Conduit")) %>% 
+  group_by(naive) %>%
+  summarise(
+    mean_len = mean(IGH_CDR3Len, na.rm = TRUE),
+    median_len = median(IGH_CDR3Len, na.rm = TRUE),
+    count = n()
+  )
+len_stat_summary
+```
+
+# Supp Fig: Sec/Mem levels
+From Andrew: do you see lots of secreted Ig signal in those regions?
+Secreted level
+```{r}
+sample_col_vec = c("Mock"="#1f77b4","D3PI"="#9CA327","D7PI"="#ff7f0e","D10PI"="#2ca02c","D14PI"="#d62728","D21PI"="#9467bd")
+  region_col_vec <- c(
+    "Conduit" = "#AE05D2",              # Purple
+    "Germinal Center" = "#0028FF",      # Blue
+    "Outer Cortex" = "#CC79A7",         # Magenta
+    "Inner Cortex" = "#0095D6",         # Teal blue
+    "Capsule" = "black",                # Black
+    "Afferent lymph vessel" = "brown",  # Brown
+    "Fat Tissue" = "#E69F00",           # Orange-brown
+    "Medulla" = "red"                   # Red
+  )
+
+df_summary <- new_meta %>%
+  group_by(Region, Sample) %>%
+  summarise(
+    Secreted_level = sum(Secreted, na.rm = TRUE) / n(),
+    .groups = "drop"
+  )
+df_summary$Sample = factor(df_summary$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+df_summary$Region = factor(df_summary$Region, levels = names(region_col_vec))
+
+gp = ggplot(df_summary, aes(x = Region, y = Secreted_level, fill = Sample)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  scale_y_continuous(labels = scales::percent_format(),limits = c(0,1)) +  # show y as %
+  labs(
+    y = ""
+  ) + theme_bw()+ scale_fill_manual(values = sample_col_vec) + 
+  theme(axis.title = element_blank(),axis.text = element_text(size=axis_text_size),axis.title.x = element_blank(),legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches")) 
+gp = gp + theme(legend.position = "none")
+gp
+ggsave(gp, filename = "./figures/Rplot_Region_Secreted_level_allBeads_AllTP_ggplot.pdf",width = 3.5,height = 1.8,dpi = 600)
+```
+Membrane-level
+```{r}
+df_summary <- new_meta %>%
+  group_by(Region, Sample) %>%
+  summarise(
+    Membrane_level = sum(Membrane, na.rm = TRUE) / n(),
+    .groups = "drop"
+  )
+df_summary$Sample = factor(df_summary$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+df_summary$Region = factor(df_summary$Region, levels = names(region_col_vec))
+
+gp = ggplot(df_summary, aes(x = Region, y = Membrane_level, fill = Sample)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  scale_y_continuous(labels = scales::percent_format(),limits = c(0,1)) +  # show y as %
+  theme_bw()+ scale_fill_manual(values = sample_col_vec) + 
+  theme(axis.text = element_text(size=axis_text_size),axis.title = element_blank(),legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches")) 
+gp = gp + theme(legend.position = "none")
+gp
+ggsave(gp, filename = "./figures/Rplot_Region_Membrane_level_allBeads_AllTP_ggplot.pdf",width = 3.5,height = 1.8,dpi = 600)
+```
+
+
+
+# Supp Fig: Aicda expression levels 
+```{r}
+# boxplot? time point on Aicda
+sample_col_vec = c("Mock"="#1f77b4","D3PI"="#9CA327","D7PI"="#ff7f0e","D10PI"="#2ca02c","D14PI"="#d62728","D21PI"="#9467bd")
+my_comparisons = list(c("D14PI","D21PI"),c("D14PI","D10PI"),c("D21PI","D10PI"))
+meta_aicda = new_meta %>% select(Index, Sample, Region, Refine_celltypes, ge_Aicda) %>% filter(Region == "Germinal Center")
+meta_aicda$Sample = factor(meta_aicda$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+# bp = ggplot(meta_aicda, aes(x = Sample, y = ge_Aicda)) + geom_boxplot(color="black",width = 0.7, position = position_dodge(width = 1.0),outlier.shape = NA) + ylim(0,1)
+# bp
+bp = ggboxplot(meta_aicda, x = "Sample", y = "ge_Aicda", color = "Sample", add = "jitter", title = "",size = 0.5,add.params = list(size = 0.1),width = 0.8) + labs(y = "Aicda exp") 
+bp = bp + stat_compare_means(comparisons = my_comparisons, method = "wilcox.test",size = 1) + xlab("") +scale_color_manual(values = sample_col_vec) + theme_bw() + theme( axis.text = element_text(size = axis_text_size), axis.title = element_text(size = axis_led_size), legend.position = "None")
+bp
+# output
+ggsave(bp, filename = "./figures/Rplot_Aicda_exp_GC_allTP_ggplot.pdf", width =  3,height = 1.8,dpi = 600)
+```
+
+
+# Fig: ComplexHeatmap
+```{r}
+set.seed(1234)
+for (i in c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI")) {
+  print(i)
+  sub_meta = new_meta_igh %>% filter(Sample == i)
+  print(nrow(sub_meta))
+  print(table(sub_meta$Region)/nrow(sub_meta))
+  ratio = round(300/nrow(sub_meta),3)
+  tmp_ds_meta_igh = stratified(sub_meta, group = "Region", size = ratio)
+  print(nrow(tmp_ds_meta_igh))
+  print(table(tmp_ds_meta_igh$Region)/nrow(tmp_ds_meta_igh))
+    tmp_ds_meta_igh$Membrane = as.character(tmp_ds_meta_igh$Membrane);tmp_ds_meta_igh$Secreted = as.character(tmp_ds_meta_igh$Secreted)
+  tmp_ds_meta_igh = tmp_ds_meta_igh %>% arrange(Region,IGH_MutFreq)
+  tmp_ds_meta_igh[is.na(tmp_ds_meta_igh)] = 0
+  # disregard the M&S
+  # tmp_ds_meta_igh = tmp_ds_meta_igh %>% mutate(IGHM = IGHM_M + IGHM_S, IGHD = IGHD_M + IGHD_S, IGHG3 = IGHG3_S + IGHG3_M, IGHG1 = IGHG1_M + IGHG1_S, IGHG2B = IGHG2B_M + IGHG2B_S, IGHG2C = IGHG2C_S,IGHE = IGHE_S, IGHA = IGHA_S+IGHA_M)
+  index_levels = tmp_ds_meta_igh$Index
+  df_mutation = tmp_ds_meta_igh %>% select(Index, IGH_MutFreq) %>% column_to_rownames("Index")
+  # scale the gene expression?
+  # sub_meta$ge_Aicda_scale = 
+  col_fun = colorRamp2(c(0, 0.05), c("white", "red"))
+  ge_col_fun = colorRamp2(c(0,1), c("white", "#009B49"))
+  len_col_fun = colorRamp2(c(10,20), c("yellow", "purple"))
+  # Isotype
+  df_isotype = tmp_ds_meta_igh %>% select(Index,IGHM:IGHA) %>% column_to_rownames("Index")
+  # color for isotype
+  iso_col_vec = c("IGHM" = "#881800", "IGHD" = "black", "IGHG3" = "#FF0000", "IGHG1" = "#F99006", "IGHG2B" = "#009B49", "IGHG2C" = "#7030A0", "IGHE" = "#B1057E", "IGHGA" = "blue")
+  df_isotype_mat = t(apply(df_isotype, 1, function(x) x/sum(x)))
+  iso_anno = anno_barplot(df_isotype_mat, gp = gpar(fill = iso_col_vec,col = NA), border = F,height = unit(2,'inches'),bar_width = 1.0)
+  # Region
+  # region_col_vec = c("Conduit" = "#AE05D2", "Germinal Center" = "#0028FF", "Outer Cortex"="#00A69B", "Inner Cortex"="#006745", "Capsule"="#DF1F1F","Afferent lymph vessel"="#000000", "Fat Tissue"="#843200","Medulla"="#ED4915")
+    region_col_vec <- c(
+    "Conduit" = "#AE05D2",              # Purple
+    "Germinal Center" = "#0028FF",      # Blue
+    "Outer Cortex" = "#CC79A7",         # Magenta
+    "Inner Cortex" = "#0095D6",         # Teal blue
+    "Capsule" = "black",                # Black
+    "Afferent lymph vessel" = "brown",  # Brown
+    "Fat Tissue" = "#E69F00",           # Orange-brown
+    "Medulla" = "red"                   # Red
+  )
+  # top_ha = HeatmapAnnotation(Region = tmp_ds_meta_igh$Region,EXP = tmp_ds_meta_igh$ge_Aicda,col = list(Region = region_col_vec, EXP = ge_col_fun),show_annotation_name = T,show_legend = T)
+  top_ha = HeatmapAnnotation(Region = tmp_ds_meta_igh$Region,EXP = tmp_ds_meta_igh$ge_Aicda,col = list(Region = region_col_vec, EXP = ge_col_fun),show_annotation_name = F,show_legend = F)
+  # Membrane & secreted
+  # bottom_ha = HeatmapAnnotation(isotype = iso_anno,Membrane = tmp_ds_meta_igh$Membrane, Secreted = tmp_ds_meta_igh$Secreted, CDR3_Len = tmp_ds_meta_igh$IGH_CDR3Len, col = list(Membrane = c("0" = "white", "1" = "blue"),Secreted = c("0" = "white", "1" = "#7B7485"), CDR3_Len = len_col_fun),show_annotation_name = T,show_legend = T)
+  bottom_ha = HeatmapAnnotation(isotype = iso_anno,Membrane = tmp_ds_meta_igh$Membrane, Secreted = tmp_ds_meta_igh$Secreted, CDR3_Len = tmp_ds_meta_igh$IGH_CDR3Len, col = list(Membrane = c("0" = "white", "1" = "blue"),Secreted = c("0" = "white", "1" = "#7B7485"), CDR3_Len = len_col_fun),show_annotation_name = F,show_legend = F)
+  
+  # ht_list = Heatmap(t(as.matrix(df_mutation)), heatmap_legend_param = list(title = "Mutation Rate"),col = col_fun, cluster_rows = F, cluster_columns = F,show_column_names = F,show_row_names = F,top_annotation = top_ha, bottom_annotation =bottom_ha, height = unit(1,'cm'))
+  # ht_list = Heatmap(t(as.matrix(df_mutation)), heatmap_legend_param = list(title = "Mutation Rate"),col = col_fun, cluster_rows = F, cluster_columns = F,show_column_names = F,show_row_names = F,top_annotation = top_ha, bottom_annotation =bottom_ha, height = unit(0.5,'inches'),show_heatmap_legend = T)
+  ht_list = Heatmap(t(as.matrix(df_mutation)), heatmap_legend_param = list(title = "Mutation Rate"),col = col_fun, cluster_rows = F, cluster_columns = F,show_column_names = F,show_row_names = F,top_annotation = top_ha, bottom_annotation =bottom_ha, height = unit(0.5,'inches'),show_heatmap_legend = F)
+  # pdf(paste0("../figures/singlebead_complexheatmap/Downsample_Heatmap_",i,"_Bcells_isotype_singlebead_ranked_Nolegend.pdf"),width = 20, height = 5)
+  pdf(paste0("./figures/singlebead_complexheatmap/Downsample_Heatmap_",i,"_Bcells_isotype_singlebead_ranked_Legend_AddCDR3Len.pdf"),width = 22, height = 5)
+  draw(ht_list)
+  dev.off()
+}
+```
+
+

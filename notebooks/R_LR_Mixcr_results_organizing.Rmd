@@ -1,0 +1,167 @@
+---
+title: "LR_Mixcr_results_organizing"
+output: html_document
+date: "2025-01-07"
+---
+
+```{r}
+getwd()
+options(stringsAsFactors = F)
+library(dplyr)
+library(stringr)
+library(reshape2)
+library(ggplot2)
+library(Biostrings)
+library(tidyr)
+library(ggpubr)
+# conflicts_prefer(dplyr::filter)
+# conflicts_prefer(base::as.data.frame)
+```
+
+```{r}
+for (tp in c("Mock","D3","D7","D10","D14","D21")) {
+input_workdir = paste0("../output_files/Mixcr_results/Mixcr_results_",tp) # Mixcr pipeline output & results
+output_dir = "/workdir/sj657/lymph_node/for_public/codes/github_pub/output_files"
+setwd(input_workdir)
+ovp_inf_csdf = read.delim(paste0("../",tp,"_demul_concensus_blaze_overlap_whitelist_1dis.csv"))
+unique_bc = unique(ovp_inf_csdf$barcode)
+unq_inf_csdf = data.frame("barcode"=unique_bc)
+# num of reads;umi
+num_reads = c();num_umi = c()
+for (i in unique_bc) {
+  tmp_df = subset(ovp_inf_csdf, barcode==i)
+  num_reads = c(num_reads,nrow(tmp_df))
+  num_umi = c(num_umi,length(unique(tmp_df$umi)))
+}
+unq_inf_csdf[,"num_reads"] = num_reads
+unq_inf_csdf[,"num_umi"] = num_umi
+colnames(unq_inf_csdf) = c("barcode","num_ONT_reads","num_ONT_umi")
+# 
+# Read the bulk align tsv
+filename = paste0("./",tp,"_blaze_bulk_clone.tsv")
+ovp_inf_align = read.delim(filename,header = T) # with the clonID
+# remove some columns ["targetSequences","targetQualities"]
+ovp_inf_align = subset(ovp_inf_align, select = -c(targetSequences,targetQualities))
+# remove -1 clones & unproductive clones
+ovp_inf_align = ovp_inf_align %>% filter(cloneId != -1) %>% filter(!grepl("_",aaSeqCDR3)) %>% filter(!grepl("*", aaSeqCDR3, fixed = T))
+ovp_inf_align$descrsR1 = paste0(">",ovp_inf_align$descrsR1)
+ovp_inf_align = ovp_inf_align %>% left_join(ovp_inf_csdf[,c("id","umi","barcode","x","y","len_cDNA","best_edit_distance")],by = join_by(descrsR1 == id))
+# ovp_inf_align$clono_type = str_extract(ovp_inf_align$allCHitsWithScore, "^.{4}") # first 4 characters are too simple
+ovp_inf_align$clono_type = sapply(strsplit(ovp_inf_align$allCHitsWithScore, "*", fixed = T),'[',1)
+print(table(ovp_inf_align$clono_type))
+inf_cloneID_table = as.data.frame(table(ovp_inf_align$cloneId))
+# read each clone information
+ovp_inf_tcra = read.delim(paste0(tp,"_blaze_mixcr.clones_TRAD.tsv"),header = T) %>% mutate(receptor_type = "TRA")
+inf_tcra_cid = unique(ovp_inf_tcra$cloneId)
+ovp_inf_tcrb = read.delim(paste0(tp,"_blaze_mixcr.clones_TRB.tsv"),header = T) %>% mutate(receptor_type = "TRB")
+inf_tcrb_cid = unique(ovp_inf_tcrb$cloneId)
+ovp_inf_igh = read.delim(paste0(tp,"_blaze_mixcr.clones_IGH.tsv"),header = T) %>% mutate(receptor_type = "IGH")
+inf_igh_cid = unique(ovp_inf_igh$cloneId)
+ovp_inf_igl = read.delim(paste0(tp,"_blaze_mixcr.clones_IGL.tsv"),header = T) %>% mutate(receptor_type = "IGL")
+inf_igl_cid = unique(ovp_inf_igl$cloneId) # no intercept
+ovp_inf_igk = read.delim(paste0(tp,"_blaze_mixcr.clones_IGK.tsv"),header = T) %>% mutate(receptor_type = "IGK")
+inf_igk_cid = unique(ovp_inf_igk$cloneId) # no intercept
+# rbind table
+inf_cid_table = do.call('rbind', list(ovp_inf_tcra[,c("cloneId","receptor_type")],ovp_inf_tcrb[,c("cloneId","receptor_type")],ovp_inf_igh[,c("cloneId","receptor_type")],ovp_inf_igl[,c("cloneId","receptor_type")],ovp_inf_igk[,c("cloneId","receptor_type")]))
+# table mergo on clone type add cDNA length
+ovp_inf_align = ovp_inf_align %>% left_join(inf_cid_table, by = join_by(cloneId))
+# merge cloneID with TRA/.../IGK
+# count occurrence of each receptor type in each barcode
+inf_bc_rt = as.data.frame(table(ovp_inf_align$barcode, ovp_inf_align$receptor_type))
+inf_bc_rt = mutate(inf_bc_rt, Var1 = as.character(Var1), Var2 = as.character(Var2))
+inf_bc_rtcp = spread(inf_bc_rt, key = "Var2", value = "Freq")
+## fill up the information
+## num_align_reads, num_align_umi
+rownames(unq_inf_csdf) = unq_inf_csdf$barcode
+unq_inf_csdf[,c("num_align_reads","num_align_umi")] = NA
+unique_align_bc = unique(ovp_inf_align$barcode)
+clontype = unique(ovp_inf_align$clono_type)
+# for clontype remove NA, TCRG, TRDC
+# clontype = clontype[! (is.na(clontype) | clontype %in% c("TCRG","TCRD"))]
+clontype = c("TRBC","TRAC","IGKC","IGLC","IGHM","IGHD","IGHG1","IGHG2B","IGHG2C","IGHG3","IGHE","IGHA")
+for (i in unique_align_bc) {
+  tmp_df = subset(ovp_inf_align, barcode==i)
+  num_reads = nrow(tmp_df);num_umi = length(unique(tmp_df$umi))
+  unq_inf_csdf[i,c("num_align_reads","num_align_umi")] = c(num_reads,num_umi)
+  # adding counts for different clontype
+  for (l in clontype) {
+      rc_tmp_df = subset(tmp_df, clono_type ==l)
+      num_reads = nrow(rc_tmp_df);num_umi = length(unique(rc_tmp_df$umi))
+      unq_inf_csdf[i,c(paste0("num_",l,"_reads"),paste0("num_",l,"_umi"))] = c(num_reads,num_umi)
+  }
+}
+# num_###_clones
+# all_clone_types = unique(inf_bc_rt$Var2)
+all_clone_types = c("IGH","IGK","IGL","TRA","TRB")
+for (cl in all_clone_types) {
+  print(cl)
+  unq_inf_csdf[,paste0("num_clones_",cl)] = NA
+  unq_clone_bc = unique(inf_bc_rt$Var1)
+  for (i in unq_clone_bc) {
+    tmp_df = subset(ovp_inf_align, barcode == i & receptor_type == cl)
+    unq_inf_csdf[i,paste0("num_clones_",cl)] = length(unique(tmp_df$cloneId))
+  }
+}
+
+# save the clone table df
+# count aaseq length
+ovp_inf_align = ovp_inf_align %>% mutate(CDR3_length = nchar(aaSeqCDR3))
+write.table(ovp_inf_align, file = paste0(output_dir,"/",tp,"_ovp_clone_table.txt"),sep = "\t",row.names = F,quote = F)
+
+##### Get Mutation Profile !!!!
+getwd()
+clean_df = function(df,i){
+  df = df %>% mutate_at(vars(starts_with("nMutation")),~replace(., . == "region_not_covered", NA)) %>% mutate_at(vars(starts_with("nLength")),~replace(., . == "region_not_covered", NA))
+  df = df %>% mutate(nMutationsTotal = rowSums(select(., starts_with("nMutationsCount")) %>% mutate_all(as.numeric), na.rm = TRUE)) %>% mutate(timepoint = i, logMutationsCount = log(nMutationsTotal + 1)) %>% mutate(descrsR1 = paste0(">",descrsR1))
+  df = df %>% mutate(nLengthVregion = rowSums(select(., c(nLengthFR1, nLengthCDR1, nLengthFR2, nLengthCDR2, nLengthFR3, nLengthFR4)) %>% mutate_all(as.numeric), na.rm = TRUE)) %>% mutate(MutFreq = nMutationsTotal / nLengthVregion)
+  df = df %>% select(timepoint, descrsR1, cloneId, chains, isotypeSubclass, isProductiveVRegion, readId, targetSequences, ends_with("Score"), starts_with("nSeq"), starts_with("aaSeq"), MutFreq, starts_with("nMutation"),logMutationsCount,starts_with("nLength"))
+  return(df)
+}
+
+df_list = {}
+  print(tp)
+  tmp_df = read.delim(paste0(tp,"_bulk_clone_mut.tsv")) %>% clean_df(tp)
+  tmp_align = read.delim(paste0(output_dir,"/",tp,"_ovp_clone_table.txt")) # merge with the ovp
+  tmp_df = tmp_df %>% filter(descrsR1 %in% tmp_align$descrsR1)
+  df_list[[tp]] = tmp_df
+whole_df = do.call("rbind",df_list) # 87108
+
+# unq_inf_csdf = read.delim("analysis/final_run_c3poa/Mixcr_demul_modpreset_D21PI/D21PI_meta_ovp.txt")
+# add barcode-UMI information to the tmp_df
+tmp_df = tmp_df %>% left_join(tmp_align %>% select(descrsR1, umi, barcode,x,y,len_cDNA,best_edit_distance,clono_type,receptor_type), by = "descrsR1")
+sum_tmp_df = tmp_df %>% group_by(barcode, receptor_type) %>% summarise(mean_MutFreq = mean(MutFreq, na.rm = T),mean_MutCount = mean(nMutationsTotal, na.rm=T)) %>% filter(!is.na(receptor_type))# if multiple reads exist in a same barcode, I calculate in mean here
+# sum_tmp_df
+# spread
+mutfreq_tmp_df = spread(sum_tmp_df %>% select(-mean_MutCount), key = "receptor_type", value = c("mean_MutFreq"))
+colnames(mutfreq_tmp_df)[2:6] = paste0(colnames(mutfreq_tmp_df)[2:6],"_MutFreq")
+# # join
+unq_inf_csdf = unq_inf_csdf %>% left_join(mutfreq_tmp_df, by = "barcode")
+# # spread
+mutfreq_tmp_df = spread(sum_tmp_df %>% select(-mean_MutFreq), key = "receptor_type", value = c("mean_MutCount"))
+colnames(mutfreq_tmp_df)[2:6] = paste0(colnames(mutfreq_tmp_df)[2:6],"_MutCount")
+# # join
+unq_inf_csdf = unq_inf_csdf %>% left_join(mutfreq_tmp_df, by = "barcode")
+
+
+##### Get Length of CDR3 !!!!
+cdr3_tmp_df = tmp_align %>% group_by(barcode, receptor_type) %>% summarise(mean_CDR3_len = mean(CDR3_length, na.rm=T)) # should worry?
+cdr3_tmp_df = spread(cdr3_tmp_df, key = "receptor_type", value = "mean_CDR3_len")
+colnames(cdr3_tmp_df)[2:6] = paste0(colnames(cdr3_tmp_df)[2:6],"_CDR3Len")
+cdr3_tmp_df = cdr3_tmp_df[,1:6]
+cdr3_tmp_df = cdr3_tmp_df %>% filter(barcode %in% unq_inf_csdf$barcode)
+# merge to unq_inf_csdf
+unq_inf_csdf = unq_inf_csdf %>% left_join(cdr3_tmp_df, by = "barcode")
+# replace 0 to NA
+unq_inf_csdf[unq_inf_csdf==0] <- NA
+
+# # write down to tsv
+write.table(unq_inf_csdf, file = paste0(output_dir,"/",tp,"_meta_ovp.txt"),sep = "\t",row.names = F,quote = F)
+
+
+# # save R space
+# save.image("./workspace_Feb2024.RData")
+}
+```
+
+
+

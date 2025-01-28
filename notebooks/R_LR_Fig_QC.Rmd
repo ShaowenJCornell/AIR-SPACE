@@ -1,0 +1,1113 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-01-10"
+---
+
+```{r}
+options(stringsAsFactors = F)
+library(dplyr)
+library(stringr)
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+library(Biostrings)
+library(tidyr)
+library(stringdist)
+library(cowplot)
+library(immunarch)
+library(conflicted)
+library(tidyverse)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflicts_prefer(base::as.data.frame)
+
+# save current image
+# save.image("../output_files/Rimage/LR_Fig_QC.RData")
+load("../output_files/Rimage/LR_Fig_QC.RData")
+```
+
+# Read data
+## Mixcr data
+```{r}
+setwd("../output_files/")
+d3pi_cln = read.delim("./D3_ovp_clone_table.txt")
+mock_cln = read.delim("./Mock_ovp_clone_table.txt")
+d7pi_cln = read.delim("./D7_ovp_clone_table.txt")
+d10pi_cln = read.delim("./D10_ovp_clone_table.txt")
+d14pi_cln = read.delim("./D14_ovp_clone_table.txt")
+d21pi_cln = read.delim("./D21_ovp_clone_table.txt")
+
+ovp_comb_clone = rbind(mock_cln %>% mutate(Sample = "Mock"), d3pi_cln %>% mutate(Sample = "D3PI"), d7pi_cln %>% mutate(Sample = "D7PI"), d10pi_cln %>% mutate(Sample = "D10PI"),
+                       d14pi_cln %>% mutate(Sample = "D14PI"), d21pi_cln %>% mutate(Sample = "D21PI"))
+ovp_comb_clone = ovp_comb_clone %>% filter(!is.na(receptor_type) & receptor_type != "TRG")
+# merge on the beads after filtering
+ovp_comb_clone['Index'] = paste(ovp_comb_clone$barcode, ovp_comb_clone$Sample,sep = "_")
+# remove unproductive ones
+ovp_comb_clone = ovp_comb_clone %>% filter(!grepl("*",aaSeqCDR3,fixed = T)) # 143574
+
+# save
+save(ovp_comb_clone, file = "./objects/Mixcr_comb_ovp_clone_table.Robj")
+```
+
+## Spatial meta table
+```{r}
+setwd("../output_files/")
+dflist = list()
+for (i in c("Mock","D3","D7","D10","D14","D21")) {
+  print(i)
+  tmp_df = read.delim(paste0("./",i,"_meta_ovp.txt"))
+  if (i != 'Mock') {i = paste0(i,"PI")  } else{consis_colnames = colnames(tmp_df)}
+  tmp_df = tmp_df[,consis_colnames]
+  tmp_df$Sample = i
+  print(colnames(tmp_df));print(ncol(tmp_df))
+  
+  dflist[[i]] = tmp_df
+}
+
+comb_df = do.call(rbind, dflist)
+# replace NA to 0
+comb_df[is.na(comb_df)] = 0
+comb_df["num_IGH_umi"] = apply(comb_df[,c("num_IGHG1_umi","num_IGHG3_umi","num_IGHG2B_umi","num_IGHG2C_umi","num_IGHM_umi","num_IGHD_umi","num_IGHE_umi","num_IGHA_umi")],1,sum)
+comb_df['Index'] = paste(comb_df$barcode, comb_df$Sample,sep = "_")
+print(dim(comb_df)) # 172182 50
+# output to tsv
+write.csv(comb_df,row.names = F,file = "./AllTP_meta_ovp.tsv")
+```
+
+## Read Immunarch results
+```{r}
+file_path = "../output_files/immunarch_dir/IGH/"
+igh_mixcr <- repLoad(file_path)
+# igh_mixcr$meta$Sample = sapply(strsplit(igh_mixcr$meta$Sample, split="_"),"[",1)
+igh_mixcr$meta$Sample = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+igh_mixcr$meta$Sample = factor(igh_mixcr$meta$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+names(igh_mixcr$data) = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+```
+
+## Re-normalize the data for a clono table
+```{r}
+setwd("../output_files/")
+d3pi_cln = read.delim("./D3_ovp_clone_table.txt")
+mock_cln = read.delim("./Mock_ovp_clone_table.txt")
+d7pi_cln = read.delim("./D7_ovp_clone_table.txt")
+d10pi_cln = read.delim("./D10_ovp_clone_table.txt")
+d14pi_cln = read.delim("./D14_ovp_clone_table.txt")
+d21pi_cln = read.delim("./D21_ovp_clone_table.txt")
+
+ovp_comb_clone = rbind(mock_cln %>% mutate(Sample = "Mock"), d3pi_cln %>% mutate(Sample = "D3PI"), d7pi_cln %>% mutate(Sample = "D7PI"), d10pi_cln %>% mutate(Sample = "D10PI"),
+                       d14pi_cln %>% mutate(Sample = "D14PI"), d21pi_cln %>% mutate(Sample = "D21PI"))
+ovp_comb_clone = ovp_comb_clone %>% filter(!is.na(receptor_type) & receptor_type != "TRG")
+# merge on the beads after filtering
+ovp_comb_clone['Index'] = paste(ovp_comb_clone$barcode, ovp_comb_clone$Sample,sep = "_")
+# remove unproductive ones
+ovp_comb_clone = ovp_comb_clone %>% filter(!grepl("*",aaSeqCDR3,fixed = T)) %>%  filter(!grepl("_",aaSeqCDR3,fixed = T))# 143574
+
+# for IGH
+igh_comb_clone = ovp_comb_clone %>% filter(receptor_type == "IGH") # 22651
+# overlap with the anndata
+filter_alltp_meta = read.csv("../output_files/adata_comb_allTP_whole_meta.csv",header = T)
+igh_comb_clone = igh_comb_clone %>% filter(Index %in% filter_alltp_meta$Index) # 17940
+# further filter the unproductive ones
+igh_comb_clone = igh_comb_clone %>% filter(str_detect(aaSeqCDR3,"^C") & str_detect(aaSeqCDR3, "W$")) # 17800
+# get Count
+igh_comb_count = igh_comb_clone %>% select(Sample, Index,cloneId, umi) %>% unique() %>% group_by(cloneId, Sample) %>% summarise(n())
+colnames(igh_comb_count) = c("cloneId","Sample","count")
+igh_comb_count = igh_comb_count %>% mutate(CID = paste(cloneId, Sample, sep = "_"))
+# how to get the immunarch results
+
+
+
+# read each timepoint
+for (tp in c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI")) {
+  print(tp)
+  tmp = igh_mixcr$data[[tp]]
+  tmp_count = igh_comb_count %>% filter(Sample == tp)
+  # filter out the clones that do not exist in the processed df
+  tmp = tmp %>% arrange(desc(Clones)) %>% filter(Clone.ID %in% tmp_count$cloneId)
+  igh_mixcr$data[[tp]] = tmp
+}
+# 
+# replace
+for (tp in c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI")) {
+  print(tp)
+  tmp = igh_mixcr$data[[tp]]
+  tmp_count = igh_comb_count %>% filter(Sample == tp) %>% filter(cloneId %in% tmp$Clone.ID)
+  rownames(tmp_count) = tmp_count$cloneId
+  tmp_count$prop = tmp_count$count/sum(tmp_count$count)
+  print(sum(tmp_count$cloneId == tmp$Clone.ID))
+  # change count
+  tmp$Clones = tmp_count$count
+  # change Proportion
+  tmp$Proportion = tmp_count$prop
+  igh_mixcr$data[[tp]] = tmp
+}
+```
+
+
+
+## load previously prepared files
+```{r}
+# Mixcr object
+load("../output_files/objects/Mixcr_comb_ovp_clone_table.Robj") # ovp_comb_clone
+# whole_alltp_meta = read.csv("../output_files/AllTP_meta_ovp.tsv",header = T)
+# on Anndata that have filtered
+filter_alltp_meta = read.csv("../output_files/adata_comb_allTP_whole_meta.csv",header = T) # 133826
+```
+
+# Figure configurations
+```{r}
+# set some aesthetic parameter
+sample_col_vec = c("Mock"="#1f77b4","D3PI"="#9CA327","D7PI"="#ff7f0e","D10PI"="#2ca02c","D14PI"="#d62728","D21PI"="#9467bd")
+iso_col_vec = c("IGHM" = "#881800", "IGHD" = "black", "IGHG3" = "#FF0000", "IGHG1" = "#F99006", "IGHG2B" = "#009B49", "IGHG2C" = "#7030A0", "IGHE" = "#B1057E", "IGHGA" = "blue")
+rec_col_vec = c("IGH" = "#ED2015", "IGK" = "#007CFF", "IGL" = "#009342","TRA" = "#F39C12","TRB" = "#8E44AD")
+axis_led_size = 8;axis_text_size = 6
+legnd_tit_size = 8;legnd_text_size = 6
+celltype_col_vec <- c(
+  "B_plasma" = "#AE05D2",  # purple
+  "B_GC" = "#FFA64B",      # like pink
+  "B_Mem" = "#0028FF",     # deep blue
+  "B_Naive" = "#008DFF",   # light green
+  "B_Act_Naive" = "#8769D0", # light green
+  "T_CD4_Cycling" = "#006745", # green
+  "T_CD4" = "#00A175",
+  "T_CD8_Cycling" = "#9BB0A5",
+  "T_CD8" = "#7A7B1B",
+  "NK_ILC" = "#5B5295",
+  "Macrophage" = "#DF1F1F",
+  "Monocytes" = "#C24F76",
+  "DCs" = "#FF6F48",
+  "FDC" = "#000000",
+  "VSMC" = "#7E5500",
+  "Endo" = "#843200",
+  "Adipocytes" = "#792E57"
+)
+```
+
+# Fig: LR Accuracy
+3 categories:
+ONT: Nanopore original reads after basecall
+R2C2: reads after R2C2
+R2C2 UMI overlap: reads after R2C2+UMI and blaze overlap with whitelist
+I filter out the reads that don't have c_identity (stats?)
+load
+### Doublecheck: are all the reads have the c_identity? Or if the reads are too mutated, they don'e show c_identity?
+Check how much without c_identity
+```{r}
+workdir = "../output_files/immcantation_results/"
+tmp_list = list()
+for (i in c("Mock","D3","D7","D10","D14","D21")) {
+  print(i)
+## BCR
+tmp_r2c2_bcr_igblast = read.delim(paste0(workdir,"R2C2_consensus/",i,"_R2C2_consensus_igblast_BCR.tsv"),header = T) %>% mutate(bcr_c = c_identity) %>% select(sequence_id, bcr_c, locus,c_call) 
+tmp_final_bcr_igblast = read.delim(paste0(workdir,"BCR/",i,"_blaze_cDNA_igblast.tsv"),header = T) %>% mutate(bcr_c = c_identity) %>% select(sequence_id, bcr_c, locus,c_call) 
+if (i == "Mock") {
+  il = "D3Mock"
+  tmp_ont_bcr_igblast = read.delim(paste0(workdir,"ONT_basecall/",il,"_ONT_igblast_BCR.tsv"),header = T) %>% mutate(bcr_c = c_identity) %>% select(sequence_id, bcr_c, locus,c_call) 
+}  else {
+  tmp_ont_bcr_igblast = read.delim(paste0(workdir,"ONT_basecall/",i,"_ONT_igblast_BCR.tsv"),header = T)%>% mutate(bcr_c = c_identity) %>% select(sequence_id, bcr_c, locus,c_call) 
+}
+
+tmp_bcr_igblast = rbind(rbind(tmp_r2c2_bcr_igblast %>% mutate(tech = "R2C2"), tmp_final_bcr_igblast %>% mutate(tech = "R2C2 UMI overlap")),tmp_ont_bcr_igblast %>% mutate(tech = "ONT"))
+## TCR
+tmp_r2c2_tcr_igblast = read.delim(paste0(workdir,"R2C2_consensus/",i,"_R2C2_consensus_igblast_TCR.tsv"),header = T) %>% mutate(tcr_c = c_identity) %>% select(sequence_id, tcr_c, locus,c_call) 
+tmp_final_tcr_igblast = read.delim(paste0(workdir,"TCR/",i,"_blaze_cDNA_igblast.tsv"),header = T) %>% mutate(tcr_c = c_identity) %>% select(sequence_id, tcr_c, locus,c_call) 
+if (i == "Mock") {
+  il = "D3Mock"
+  tmp_ont_tcr_igblast = read.delim(paste0(workdir,"ONT_basecall/",il,"_ONT_igblast_TCR.tsv"),header = T) %>% mutate(tcr_c = c_identity) %>% select(sequence_id, tcr_c, locus,c_call) 
+}  else {
+  tmp_ont_tcr_igblast = read.delim(paste0(workdir,"ONT_basecall/",i,"_ONT_igblast_TCR.tsv"),header = T) %>% mutate(tcr_c = c_identity) %>% select(sequence_id, tcr_c, locus,c_call) 
+}
+tmp_tcr_igblast = rbind(rbind(tmp_r2c2_tcr_igblast %>% mutate(tech = "R2C2"), tmp_final_tcr_igblast %>% mutate(tech = "R2C2 UMI overlap")),tmp_ont_tcr_igblast %>% mutate(tech = "ONT"))
+## Add together
+# tmp_all_igblast = rbind(tmp_bcr_igblast,tmp_tcr_igblast)
+tmp_all_igblast = full_join(select(tmp_bcr_igblast,sequence_id, bcr_c, locus, c_call), select(tmp_tcr_igblast, sequence_id, tcr_c, locus, c_call, tech),suffix = c("_b","_t"),by = "sequence_id")
+tmp_list[[i]] = tmp_all_igblast
+}
+
+# for D3
+for (i in c("D3")) {
+  print(i)
+## BCR
+tmp_r2c2_bcr_igblast = read.delim(paste0(workdir,"R2C2_consensus/",i,"_R2C2_consensus_igblast_BCR.tsv"),header = T) %>% mutate(bcr_c = c_identity) %>% select(sequence_id, bcr_c, locus,c_call) 
+tmp_final_bcr_igblast = read.delim(paste0(workdir,"BCR/",i,"_blaze_cDNA_igblast.tsv"),header = T) %>% mutate(bcr_c = c_identity) %>% select(sequence_id, bcr_c, locus,c_call) 
+
+
+tmp_bcr_igblast = rbind(rbind(tmp_r2c2_bcr_igblast %>% mutate(tech = "R2C2"), tmp_final_bcr_igblast %>% mutate(tech = "R2C2 UMI overlap")))
+## TCR
+tmp_r2c2_tcr_igblast = read.delim(paste0(workdir,"R2C2_consensus/",i,"_R2C2_consensus_igblast_TCR.tsv"),header = T) %>% mutate(tcr_c = c_identity) %>% select(sequence_id, tcr_c, locus,c_call) 
+tmp_final_tcr_igblast = read.delim(paste0(workdir,"TCR/",i,"_blaze_cDNA_igblast.tsv"),header = T) %>% mutate(tcr_c = c_identity) %>% select(sequence_id, tcr_c, locus,c_call) 
+
+tmp_tcr_igblast = rbind(rbind(tmp_r2c2_tcr_igblast %>% mutate(tech = "R2C2"), tmp_final_tcr_igblast %>% mutate(tech = "R2C2 UMI overlap")))
+## Add together
+# tmp_all_igblast = rbind(tmp_bcr_igblast,tmp_tcr_igblast)
+tmp_all_igblast = full_join(select(tmp_bcr_igblast,sequence_id, bcr_c, locus, c_call), select(tmp_tcr_igblast, sequence_id, tcr_c, locus, c_call, tech),suffix = c("_b","_t"),by = "sequence_id")
+tmp_list[[i]] = tmp_all_igblast
+}
+
+# How to assign?
+align_c_call = function(bcr_c, tcr_c, locus_b, locus_t){
+  if (is.na(bcr_c) & is.na(tcr_c)) {
+    return(NA)
+  } else if (!is.na(bcr_c) & is.na(tcr_c)){
+    return(paste(locus_b,bcr_c,sep = "_"))
+  } else if (!is.na(tcr_c) & is.na(bcr_c)){
+    return(paste(locus_t,tcr_c,sep = "_"))
+  } else {
+    if (bcr_c > tcr_c){return(paste(locus_b,bcr_c,sep = "_")) } else {return(paste(locus_t,tcr_c,sep = "_")) }
+  }
+}
+
+# tmp_all_igblast <- tmp_all_igblast %>%
+#   mutate(c_call = mapply(align_c_call, bcr_c, tcr_c, locus_b, locus_t))
+comb_igblast = do.call(rbind, tmp_list)
+comb_igblast <- comb_igblast %>%
+  mutate(c_call = mapply(align_c_call, bcr_c, tcr_c, locus_b, locus_t))
+comb_igblast$c_identity = sapply(strsplit(comb_igblast$c_call, "_"),"[",2)
+# save this, too large
+saveRDS(comb_igblast, file = "../output_files/objects/LR_stat_object.rds")
+comb_igblast = readRDS("../output_files/objects/LR_stat_object.rds")
+```
+
+plot
+```{r}
+comb_igblast$c_identity = as.numeric(comb_igblast$c_identity)
+tech_color = c("ONT"="#267B9A","R2C2"="#6174AE","R2C2 UMI overlap"="#BA5D88")
+tmp_median = comb_igblast %>% filter(!is.na(c_identity)) %>% group_by(tech) %>% summarise(Median = median(c_identity))
+tmp_mean = comb_igblast%>% filter(!is.na(c_identity))  %>% group_by(tech) %>% summarise(Mean = mean(c_identity))
+dp = ggplot(comb_igblast, aes(y = c_identity, color = tech, x =tech)) + geom_dotplot(binaxis = 'y', stackdir = 'centerwhole',dotsize = 0.01,binwidth = 0.1,stackratio = 0.5,alpha = 0.6) + theme(legend.position = "none") + scale_color_manual(values = tech_color) + 
+ ylab(label = "Accuracy (%)") + 
+  geom_hline(data = tmp_median, aes(yintercept = Median),linetype = "dashed", color = "black", linewidth = 0.75) + geom_hline(data = tmp_mean, aes(yintercept = Mean),linetype = "dashed", color = "red", linewidth = 0.75,linetpye="dashed") +  theme_bw() + theme(axis.title.y = element_text(size = axis_led_size),axis.text.y = element_text(size=axis_text_size),axis.text.x = element_blank(),axis.title.x = element_blank(),legend.position = "none") # stackratio to adjust the ratio of the stacking
+dp_wrap = dp + facet_wrap(~ tech, scales = "free_x") + theme(strip.text = element_text(size = 4))
+png("../figures/LR_QC/Rplot_LR_Accuracy.png",width = 2,height = 1.5,units = "in",res = 600)
+print(dp_wrap)
+dev.off()
+```
+stats:
+```{r}
+# How many NA
+comb_igblast$Sample = rownames(comb_igblast)
+count_stat = comb_igblast %>% mutate(Sample = str_split(Sample, pattern = "\\.", simplify = TRUE)[, 1]) %>%  
+  group_by(Sample) %>%
+  summarise(NA_count = sum(is.na(c_identity)), total_num = n()) %>% mutate(NA_freq = NA_count/total_num)
+count_stat
+# filter out NA
+comb_igblast_rmNA = comb_igblast %>% filter(!is.na(c_identity))
+tmp_stat = comb_igblast_rmNA %>% group_by(tech) %>% summarise(Mean = mean(c_identity), Median = median(c_identity), Std = sd(c_identity))
+tmp_stat
+```
+
+
+# Fig: Violin/box plot show the CDR3 length
+```{r}
+# Specify the output folder
+output_folder <- "./figures/LR_QC"
+
+# Check if the output folder exists; if not, create it
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)
+}
+
+comb_plotdf = ovp_comb_clone %>% select(barcode,umi,clono_type, receptor_type, CDR3_length,Sample,Index,cloneId) %>% unique() # 129811
+comb_plotdf$Sample = factor(comb_plotdf$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+comb_plotdf$receptor_type = factor(comb_plotdf$receptor_type, levels = c("IGH","IGK","IGL","TRB","TRA"))
+comb_plotdf = comb_plotdf %>% filter(CDR3_length < 25)
+# p = ggviolin(comb_plotdf, x = "receptor_type", y = "CDR3_length",color = "Sample", add = c("box"),trim = T)
+# p = p + geom_boxplot(width = 0.5, position = position_dodge(width = 0.7),outlier.shape = NA)
+# p
+# ggsave(p, filename = "./figures/Rplot_CDR3_Len_AllTP_AllIR.pdf",width = 10,height = 5)
+# Let's try just use ggplot
+vp = ggplot(comb_plotdf, aes(x=receptor_type, y=CDR3_length, color=Sample,fill=Sample)) + geom_violin(trim=T,width = 1.0,position = position_dodge(width = 0.7),color='black',linewidth=0.25) + geom_boxplot(color="black",width = 0.5, position = position_dodge(width = 0.7),outlier.shape = NA,linewidth=0.25)
+vp = vp + xlab(label="Receptor type") + ylab(label = "CDR3 length (aa)") + theme_bw()+ scale_fill_manual(values = sample_col_vec) + 
+  theme(axis.title = element_text(size = axis_led_size),axis.text = element_text(size=axis_text_size),axis.title.x = element_blank(),legend.key.size = unit(0.1,"inches")) 
+# vp
+ggsave(vp, filename = file.path(output_folder, "Rplot_CDR3_Len_AllTP_AllIR_ggplot.pdf"),width = 2.6,height = 1.5,dpi = 600)
+# without legend 
+vp = vp + theme(legend.position = "none")
+# vp
+ggsave(vp, filename = file.path(output_folder ,"Rplot_CDR3_Len_AllTP_AllIR_ggplot.pdf"),width = 2.6,height = 1.5,dpi = 600)
+```
+
+
+
+# Fig: Number of unique clones
+```{r}
+# Specify the output folder
+output_folder <- "./figures/LR_QC"
+
+# Check if the output folder exists; if not, create it
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)
+}
+
+# number of unique clones:
+num_clone = ovp_comb_clone %>% select(Sample, cloneId, receptor_type,barcode) %>% mutate(Index = paste(barcode, Sample, sep = "_")) %>% unique()
+# overlap with spatial object
+num_clone = num_clone %>% filter(Index %in% filter_alltp_meta$Index) # 96687
+num_clone = num_clone %>% select(Sample, cloneId, receptor_type) %>% unique() # 21133
+num_clone = as.data.frame(table(num_clone$Sample, num_clone$receptor_type))
+# Total number of clones
+colnames(num_clone) = c("Sample","clone_type","count")
+sum(num_clone$count)
+# check stat
+num_clone %>% group_by(clone_type) %>% summarise(tot_count = sum(count))
+# gather
+plot_df = num_clone
+plot_df$Sample = factor(plot_df$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+plot_df$clone_type = factor(plot_df$clone_type, levels = c("IGH","IGK","IGL","TRB","TRA"))
+plot_df_barpoint = plot_df
+# Take the average
+plot_df_barpoint = plot_df %>% group_by(clone_type) %>% summarise(average = mean(count), sd = sd(count))
+# merge
+plot_df_barpoint = plot_df_barpoint %>% right_join(plot_df)
+
+plot_df_barpoint$clone_type = factor(plot_df_barpoint$clone_type, levels = c("IGH","IGK","IGL","TRB","TRA"))
+bp = ggplot(plot_df_barpoint, aes(x=clone_type, y = average)) + geom_bar(position = 'dodge', stat = "summary",fill="black") + geom_point(aes(x = clone_type, y = count,color = Sample),position = position_jitter(width = 0.15),size = 1)+ scale_color_manual(values = sample_col_vec) + theme_bw() + ylab("number of unique clones") + theme(legend.position = 'none',                                                                                                                                                                                                                                                                              axis.text = element_text(size = axis_text_size),                                                                                                                                                                                                                  axis.title.y = element_text(size = axis_led_size),axis.title.x = element_blank())
+bp
+ggsave(bp, filename = file.path(output_folder,"Rplot_Alltp_clonotype_counts_ovpAnndata.pdf"),width = 2,height = 1.5,dpi = 600)
+# with dot legends
+bp = ggplot(plot_df_barpoint, aes(x=clone_type, y = average)) + geom_bar(position = 'dodge', stat = "summary",fill="black") + geom_point(aes(x = clone_type, y = count,color = Sample),position = position_jitter(width = 0.15),size = 1)+ scale_color_manual(values = sample_col_vec) + theme_bw() + ylab("number of unique clones") + theme(legend.position = 'right',                                                                                                                                                                                                                                                                              axis.text = element_text(size = axis_text_size),                                                                                                                                                                                                                  axis.title.y = element_text(size = axis_led_size),axis.title.x = element_blank(),legend.text = element_text(size = ))
+bp
+ggsave(bp, filename = file.path(output_folder,"Rplot_Alltp_clonotype_counts_ovpAnndata_legend.pdf"),width = 2,height = 1.5,dpi = 600)
+```
+
+
+
+## Fig: num of unique aligned reads per each clone
+```{r}
+# number of unique clones:
+num_clone = ovp_comb_clone %>% select(Sample, receptor_type,barcode,umi) %>% mutate(Index = paste(barcode, Sample, sep = "_"), uniq_reads = paste(barcode, umi, sep = "_")) %>% unique()
+# overlap with spatial object
+num_clone = num_clone %>% filter(Index %in% filter_alltp_meta$Index) # 96687
+num_clone = num_clone %>% select(Sample, uniq_reads, receptor_type) %>% unique() # 21133
+num_clone = as.data.frame(table(num_clone$Sample, num_clone$receptor_type))
+# Total number of clones
+colnames(num_clone) = c("Sample","clone_type","count")
+sum(num_clone$count)
+# check stat
+num_clone %>% group_by(clone_type) %>% summarise(tot_count = sum(count))
+# gather
+plot_df = num_clone
+plot_df$Sample = factor(plot_df$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+plot_df$clone_type = factor(plot_df$clone_type, levels = c("IGH","IGK","IGL","TRB","TRA"))
+plot_df_barpoint = plot_df
+# Take the average
+plot_df_barpoint = plot_df %>% group_by(clone_type) %>% summarise(average = mean(count), sd = sd(count))
+# merge
+plot_df_barpoint = plot_df_barpoint %>% right_join(plot_df)
+
+plot_df_barpoint$clone_type = factor(plot_df_barpoint$clone_type, levels = c("IGH","IGK","IGL","TRB","TRA"))
+bp = ggplot(plot_df_barpoint, aes(x=clone_type, y = average)) + geom_bar(position = 'dodge', stat = "summary",fill="black") + geom_point(aes(x = clone_type, y = count,color = Sample),position = position_jitter(width = 0.15),size = 1)+ scale_color_manual(values = sample_col_vec) + theme_bw() + ylab("number of unique reads") + theme(legend.position = 'none',                                                                                                                                                                                                                                                                              axis.text = element_text(size = axis_text_size),                                                                                                                                                                                                                  axis.title.y = element_text(size = axis_led_size),axis.title.x = element_blank())
+bp
+ggsave(bp, filename = "./figures/LR_QC/Rplot_Alltp_clonotype_Readcounts_ovpAnndata.pdf",width = 2,height = 1.5,dpi = 600)
+```
+
+
+# Fig: num of Clones per bead
+```{r}
+comb_df = comb_df %>% filter(Index %in% filter_alltp_meta$Index)
+df = comb_df %>% select(barcode,Sample, starts_with("num_clones_"))
+# change timepoint to Sample for convenience
+# need to replace 0 to NA
+df[df==0] <- NA
+tl = colnames(df)[3:7]
+df_list = list()
+for (i in tl) {
+  tmp_df = df[,c("Sample",i)]
+  plot_df = as.data.frame(table(tmp_df$Sample,tmp_df[,i])) %>% melt() %>% mutate(clone_type = !!str_replace(i,"num_clones_","")) %>% group_by(Var1) %>% mutate(pct = value/sum(value))
+  df_list[[i]] = plot_df
+}
+plot_df = do.call(rbind, df_list)
+colnames(plot_df) = c("Sample","freq","jj","value","clone_type","Percentage")
+#plot_df$freq = as.numeric(plot_df$freq)
+plot_df$Sample = factor(plot_df$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+plot_df$clone_type = factor(plot_df$clone_type, levels = c("IGH","IGK","IGL","TRB","TRA"))
+# check stat
+plot_df %>% group_by(clone_type,freq) %>% summarise(Mean = mean(Percentage))
+# check stat
+plot_df %>% group_by(freq) %>% summarise(Mean = mean(Percentage))
+
+# ggtitle("# of unique clones pefreq# ggtitle("# of unique clones per bead")
+p = ggplot(plot_df, aes(x = freq, y = Percentage, fill = Sample)) + geom_col(position = "dodge")+scale_y_continuous(limits = c(0,1)) +scale_x_discrete(limits = c("1","2","3","4"))+ facet_grid(~ clone_type) + scale_fill_manual(values = sample_col_vec) +theme_bw()+theme(axis.text = element_text(size = axis_text_size),strip.text.x = element_text(size = 8),axis.title.y = element_text(size = axis_led_size),axis.title.x = element_blank(),legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size))
+ggsave(p, filename = "./figures/LR_QC/Rplot_AllTP_bar_CloneBead_counts_ovpAnndata_legend.png",width = 3,height = 1.5,dpi = 600)
+ggsave(p, filename = "./figures/LR_QC/Rplot_AllTP_bar_CloneBead_counts_ovpAnndata_legend.pdf",width = 3,height = 1.5,dpi = 600)
+# without legend
+p = ggplot(plot_df, aes(x = freq, y = Percentage, fill = Sample)) + geom_col(position = "dodge")+scale_y_continuous(limits = c(0,1)) +scale_x_discrete(limits = c("1","2","3","4"))+ facet_grid(~ clone_type) + scale_fill_manual(values = sample_col_vec) +theme_bw()+theme(axis.text = element_text(size = axis_text_size),strip.text.x = element_text(size = 8),axis.title.y = element_text(size = axis_led_size),axis.title.x = element_blank(),legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.position = "None")
+ggsave(p, filename = "./figures/LR_QC/Rplot_AllTP_bar_CloneBead_counts_ovpAnndata.png",width = 3,height = 1.5,dpi = 600)
+ggsave(p, filename = "./figures/LR_QC/Rplot_AllTP_bar_CloneBead_counts_ovpAnndata.pdf",width = 3,height = 1.5,dpi = 600)
+# stats overall
+plot_df %>% group_by(clone_type, freq) %>% summarise(Mean = mean(Percentage)) %>% filter(freq == 1)
+```
+
+
+# Fig: IGH isoforms with S/M form in detail
+## Barplot on composition
+```{r}
+# read the meta from Bcell_subtype_analysis_R.Rmd
+# read the MemSec matrix
+meta_mem_sec = read.delim("../output_files/membrane_secreted_check/AllTP_membrane_secreted_ovp_Concensus_reads.txt",header = T)
+
+int_meta_mem_sec = meta_mem_sec %>% filter(Index %in% filter_alltp_meta$Index) # 108206
+int_meta_mem_sec$Sample = sapply(strsplit(int_meta_mem_sec$Index,split="_"),'[',2)
+# b_meta = write.table(meta_mem_sec, file = "/workdir/sj657/lymph_node/membrane_secreted_check/AllTP_meta_membrane_secreted_ovp_csdf.txt",sep = "\t",row.names = F,quote = F)
+comb_df = int_meta_mem_sec %>% select(Sample,IGHM_M:IGHA_M ) %>% gather(., key = "Class", value = "count", IGHM_M:IGHA_M )
+comb_df = comb_df %>% group_by(Sample, Class) %>% summarise(count = sum(count,na.rm = T)) # count table
+comb_df$Sample <- recode(comb_df$Sample,
+                               "Mock" = "Mock",
+                               "D3PI" = "D3",
+                               "D7PI" = "D7",
+                               "D10PI" = "D10",
+                               "D14PI" = "D14",
+                               "D21PI" = "D21")
+
+comb_df$Sample = factor(comb_df$Sample, levels = c("Mock","D3","D7","D10","D14","D21"))
+comb_df$Class = factor(comb_df$Class, levels = c("IGHM_S","IGHM_M","IGHD_S","IGHD_M","IGHG3_S","IGHG3_M","IGHG1_S","IGHG1_M","IGHG2B_S","IGHG2B_M","IGHG2C_S","IGHG2C_M","IGHE_S","IGHE_M","IGHA_S","IGHA_M"))
+# color scale
+col_vector = c("IGHM_S"="#881800","IGHM_M"="#864B00","IGHD_S"='black',"IGHD_M"='#412728',"IGHG3_S"='#FF0000',"IGHG3_M"='#EE005F',
+               'IGHG1_S' = "#F99006", 'IGHG1_M'='#BA9700','IGHG2B_S'='#009B49','IGHG2B_M'='#94C89D','IGHG2C_S'='#7030A0','IGHG2C_M'='#9476A7',
+               'IGHE_S'='#B1057E','IGHE_M'='#DF316B','IGHA_S'="#0000FF",'IGHA_M'="#0066FF")
+# names(col_vector) = levels(comb_df$Class)
+p = ggplot(comb_df, aes(fill=Class, x = Sample, y = count)) + geom_bar(position = "fill",stat = "identity") + theme_bw() + ggtitle("IGH isoform composition") + ylab("Fraction") + 
+  theme(axis.text.y = element_text(size = axis_text_size),axis.title.x = element_blank(),axis.text.x = element_text(angle =0,hjust = 0.5,size = axis_text_size),legend.text = element_text(size = legnd_text_size),legend.title = element_text(size = legnd_tit_size),
+        title = element_blank(),legend.key.size = unit(0.1,"inches")) + scale_fill_manual(values = col_vector)
+# p
+ggsave(plot=p,filename="./figures/LR_QC/Rplot_fraction_IGH_CLass_Bsubtype_AllTP_ovpAnndata_Legend.pdf",width = 2,height = 1.5,dpi = 600)
+# without legend
+p = p + theme(legend.position = "None")
+ggsave(plot=p,filename="./figures/LR_QC/Rplot_fraction_IGH_CLass_Bsubtype_AllTP_ovpAnndata.pdf",width = 2,height = 1.5,dpi = 600)
+```
+
+
+
+
+# Fig: Mutation Count/ Mutation Freq box plot
+```{r}
+b_recp_color = c("IGH" = "#ED2015", "IGK" = "#007CFF", "IGL" = "#009342")
+# in whole_alltp_meta/filter_alltp_meta
+whole_df =  ovp_comb_clone %>% mutate(Clone_ID = paste0(Sample, "_", cloneId),tp_readId = paste0(Sample, "_", readId)) # every read
+# add mutation information
+mut_df = read.csv(file = "../output_files/AllTP_Mut_table.tsv",header = T)
+mut_df$timepoint = sapply(mut_df$timepoint, FUN = function(x) if(x != "Mock"){x = paste0(x,"PI")} else {x})
+mut_df$tp_readId = paste0(mut_df$timepoint, "_", mut_df$readId)
+whole_df = mut_df %>% select(tp_readId, MutFreq, nMutationsTotal) %>% right_join(whole_df)
+
+summary(whole_df$nMutationsTotal)
+ig_whole_df = whole_df %>% filter(receptor_type %in% c("IGH","IGK","IGL"))
+ig_whole_df$timepoint = factor(ig_whole_df$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+my_comparisons <- list(c("Mock","D3PI"),c("D3PI","D7PI"),c("D7PI","D10PI"),c("D10PI","D14PI"),c("D14PI","D21PI"),c("D21PI", "Mock"))
+
+ig_whole_df %>% group_by(timepoint,receptor_type) %>% summarise(mean(MutFreq))
+ig_whole_df$timepoint <- recode(ig_whole_df$timepoint,
+                               "Mock" = "Mock",
+                               "D3PI" = "D3",
+                               "D7PI" = "D7",
+                               "D10PI" = "D10",
+                               "D14PI" = "D14",
+                               "D21PI" = "D21")
+bp = ggplot(ig_whole_df, aes(x=timepoint, y=MutFreq, color=receptor_type,fill=receptor_type)) + geom_boxplot(color="black",width = 0.7, position = position_dodge(width = 1.0),outlier.shape = NA,linewidth=0.25) + ylim(0,0.05) + scale_fill_manual(values = b_recp_color) + scale_color_manual(values = b_recp_color)
+bp = bp + xlab(label="Timepoint") + ylab(label = "Mutation Frequency") + labs(fill = "Receptor type") + theme_bw() + theme(axis.title.y = element_text(size = axis_led_size),axis.text.y = element_text(size=axis_text_size),axis.text.x = element_text(size=axis_text_size),axis.title.x = element_blank(),legend.title = element_text(size = legnd_tit_size),legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches"))
+# bp
+ggsave(plot=bp,filename="./figures/LR_QC/Rplot_IG_Mutation_Frequency_AllTP_Legend.pdf",width = 2,height = 1.5,dpi = 600)
+bp = bp + theme(legend.position = "None")
+ggsave(plot=bp,filename="./figures/LR_QC/Rplot_IG_Mutation_Frequency_AllTP.pdf",width = 2,height = 1.5,dpi = 600)
+```
+
+
+
+
+
+# Fig: Pair receptors
+```{r}
+# meta the csv
+meta = read.csv("../output_files/adata_comb_allTP_whole_meta.csv",header = T)
+# turn NA to 0
+ct_list = c('num_clones_IGH','num_clones_IGK','num_clones_IGL')
+meta = meta %>% mutate_at(vars(ct_list), ~ ifelse(is.na(.),0.0,.))
+
+meta = meta %>% mutate(num_clones_IGpair_HK = num_clones_IGH * num_clones_IGK, num_clones_IGpair_HL = num_clones_IGH * num_clones_IGL) %>% mutate(num_clones_IGpair = num_clones_IGpair_HK + num_clones_IGpair_HL)
+meta$Sample = factor(meta$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+# chenage the axis text for better visualization
+```
+Check all the beads with H-chain, and proportion of them also have L-chian
+```{r}
+sum_meta = meta %>% group_by(Sample) %>% summarise(num_IGH = sum(num_clones_IGH > 0), num_mix_HKL = sum(num_clones_IGpair_HK > 0 & num_clones_IGpair_HL > 0),
+                                                   num_only_HK = sum(num_clones_IGpair_HK > 0 & num_clones_IGpair_HL == 0), num_only_HL = sum(num_clones_IGpair_HL > 0 & num_clones_IGpair_HK == 0), num_IGpair = sum(num_clones_IGpair >0),
+                                                   num_noL = sum(num_clones_IGH > 0 & num_clones_IGpair == 0)) %>% mutate(across(starts_with("num_"), ~ .x / num_IGH, .names = "prop_{.col}")) %>% select(-prop_num_IGH, -prop_num_IGpair)
+sum_meta
+```
+
+```{r}
+## Stacked proportion barplot
+#title = "Proportions of IGH pair-receptors"
+sum_meta_long = sum_meta %>%   pivot_longer(cols = starts_with("prop_"),
+               names_to = "Category",
+               values_to = "Proportion")
+sum_meta_long$Category <- recode(sum_meta_long$Category,
+                                 "prop_num_only_HK" = "HK",
+                                 "prop_num_mix_HKL" = "HKL",
+                                 "prop_num_only_HL" = "HL",
+                                 "prop_num_noL" = "no L-chain")
+
+# Recode the 'Sample' column
+sum_meta_long$Sample <- recode(sum_meta_long$Sample,
+                               "Mock" = "Mock",
+                               "D3PI" = "D3",
+                               "D7PI" = "D7",
+                               "D10PI" = "D10",
+                               "D14PI" = "D14",
+                               "D21PI" = "D21")
+sum_meta_long$Category = factor(sum_meta_long$Category, levels = c("HK","HL", "HKL", "no L-chain"))
+
+# # check stat
+# sum_meta_long %>% group_by(Category) %>% summarise(Sum = sum(count))
+# 5506+494+1412
+# # check stat
+# sum_meta_long %>% group_by(Category) %>% summarise(Mean = mean(Proportion)) %>% slice(1:3) %>% summarise(Mean_sum = sum(Mean))
+
+# and color
+pairbar_col_vec = c("#0795C6","#F65200","#9B15ED","#AFAFAF")
+
+## Absolute count
+sum_meta_long = sum_meta_long %>% group_by(Sample) %>% mutate(count = round(num_IGH * Proportion, 0)) %>% ungroup()
+bp = ggplot(sum_meta_long, aes(x = Sample, y = count, fill = Category)) +
+  geom_bar(stat = "identity", position = "stack") +
+  # scale_y_continuous(labels = scales::percent) +
+  # labs(y = "Counts", x = "Sample", title = "Counts of IGH pair-receptors") +
+  labs(y = "Counts", x = "Sample") +
+  theme_bw() + scale_fill_manual(values = pairbar_col_vec) + theme(axis.title.x = element_blank(),axis.text.x = element_text(size = axis_text_size), axis.text.y = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size),
+                                                                   legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches"))
+bp
+ggsave(bp, filename = "./figures/LR_QC/Rplot_pairHL_stats_AllTP_Counts_barplot_Legend.pdf",width = 2,height = 1.5,dpi = 600)
+bp = bp + theme(legend.position = "None")
+ggsave(bp, filename = "./figures/LR_QC/Rplot_pairHL_stats_AllTP_Counts_barplot.pdf",width = 2.3,height = 1.8,dpi = 600)
+```
+
+## Sup Fig: promiscuous
+Number of combinations
+```{r}
+# tp = "Mock"
+comb_pairhl_list = list()
+for (tp in c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI")) {
+  print(tp)
+barcode_pair = meta %>% filter(Sample == tp & num_clones_IGpair > 0) %>% .$barcode
+tmp_clone = ovp_comb_clone %>% filter(Sample == tp & grepl("IG",clono_type) & barcode %in% barcode_pair) %>% filter(!grepl("_",aaSeqCDR3)) %>% mutate(rec_cloneid = paste(receptor_type, cloneId, sep = "_"))
+
+igh_cloneid = tmp_clone %>% filter(receptor_type == "IGH") %>% .$cloneId %>% unique()
+# make a df
+tmp_igh_pairdf = as.data.frame(igh_cloneid);tmp_igh_pairdf = tmp_igh_pairdf %>% mutate(paired_chains = NA)
+for (i in 1:nrow(tmp_igh_pairdf)){
+  h = tmp_igh_pairdf[i,"igh_cloneid"]
+  tmp_sele = tmp_clone %>% filter(receptor_type == "IGH" & cloneId == h)
+  tmp_sele_bc = unique(tmp_sele$barcode)
+  tmp_sele_l = tmp_clone %>% filter(receptor_type != "IGH" & barcode %in% tmp_sele_bc)
+  # make igk igl separately
+  # tmp_sele_l$L_cloneId = paste(tmp_sele_l$receptor_type, tmp_sele_l$cloneId, sep = "_")
+  light_vec = sort(table(tmp_sele_l$rec_cloneid), decreasing = T)
+  lv = c()
+  for (l in 1:length(light_vec)) {
+  lv = c(lv, paste(names(light_vec)[l],"(",light_vec[l],")",sep = ""))
+  }
+  lv = paste(lv,collapse = ";")
+  tmp_igh_pairdf[i,"paired_chains"] = lv
+  # break
+}
+tmp_igh_pairdf$num_comb = str_count(tmp_igh_pairdf$paired_chains, "_")
+tmp_igh_pairdf$igh_cloneid = paste0("IGH_",tmp_igh_pairdf$igh_cloneid)
+print(summary(tmp_igh_pairdf$num_comb))
+
+# same on IGL
+igl_cloneid = tmp_clone %>% filter(receptor_type != "IGH")  %>% .$rec_cloneid %>% unique()
+# make a df
+tmp_igl_pairdf = as.data.frame(igl_cloneid);tmp_igl_pairdf = tmp_igl_pairdf %>% mutate(paired_chains = NA)
+
+for (i in 1:nrow(tmp_igl_pairdf)){
+  h = tmp_igl_pairdf[i,"igl_cloneid"]
+  # print(h)
+  tmp_sele = tmp_clone %>% filter(receptor_type != "IGH" & rec_cloneid == h)
+  tmp_sele_bc = unique(tmp_sele$barcode)
+  tmp_sele_h = tmp_clone %>% filter(receptor_type == "IGH" & barcode %in% tmp_sele_bc)
+  # print(nrow(tmp_sele_h))
+  # make igk igl separately
+  # tmp_sele_l$L_cloneId = paste(tmp_sele_l$receptor_type, tmp_sele_l$cloneId, sep = "_")
+  heavy_vec = sort(table(tmp_sele_h$rec_cloneid), decreasing = T)
+  hv = c()
+  for (l in 1:length(heavy_vec)) {
+  hv = c(hv, paste(names(heavy_vec)[l],"(",heavy_vec[l],")",sep = ""))
+  }
+  hv = paste(hv,collapse = ";")
+  tmp_igl_pairdf[i,"paired_chains"] = hv
+  # break
+}
+tmp_igl_pairdf$num_comb = str_count(tmp_igl_pairdf$paired_chains, "_")
+print(summary(tmp_igl_pairdf$num_comb))
+
+# Waterfall plot
+colnames(tmp_igh_pairdf)[1] = 'rec_cloneid';colnames(tmp_igl_pairdf)[1] = 'rec_cloneid'
+tmp_ighl_pairdf = rbind(tmp_igh_pairdf,tmp_igl_pairdf) %>% mutate(Sample = tp) %>% mutate(receptor_type = str_extract(rec_cloneid, "^[^_]+"))
+# rank
+tmp_ighl_pairdf = tmp_ighl_pairdf %>% group_by(receptor_type) %>% mutate(rank = rank(-num_comb, ties.method =  "random")) %>% ungroup()
+
+# plot
+
+rp = ggplot(tmp_ighl_pairdf, aes(x = rank, y = num_comb, fill = receptor_type)) +
+  geom_bar(stat = "identity") + scale_fill_manual(values = c("IGH" = "#ED2015", "IGK" = "#007CFF", "IGL" = "#009342")) +
+  theme_bw() + 
+  theme(axis.title = element_text(size = axis_led_size),axis.text = element_text(size=axis_text_size),axis.title.x = element_blank(),legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches"))
+   # Customize colors as needed
+ggsave(rp, filename = paste0("./figures/LR_QC/Rplot_Legend_waterfall_HL_combinations_",tp,".pdf"),width = 2,height = 1.5,dpi = 600)
+rp = rp + theme(legend.position = "none")
+ggsave(rp, filename = paste0("./figures/LR_QC/Rplot_waterfall_HL_combinations_",tp,".pdf"),width = 2,height = 1.5,dpi = 600)
+comb_pairhl_list[[tp]] = tmp_ighl_pairdf
+}
+
+comb_pairhl_df = do.call("rbind", comb_pairhl_list)
+comb_pairhl_df = comb_pairhl_df %>% filter(num_comb > 0)
+```
+plotting combine together, maybe use boxplot
+```{r}
+# let's plot it with a boxplot
+b_recp_color = c("IGH" = "#ED2015", "IGK" = "#007CFF", "IGL" = "#009342")
+bp = ggplot(comb_pairhl_df, aes(x=Sample, y=num_comb, color=receptor_type,fill=receptor_type)) + geom_boxplot(color="black",width = 0.7, position = position_dodge(width = 1.0),linewidth=0.25)+ ylim(0,200)  + scale_fill_manual(values = b_recp_color) + scale_color_manual(values = b_recp_color)
+bp = bp + xlab(label="Timepoint") + ylab(label = "Number of combinations") + labs(fill = "Receptor type") + theme_bw() + theme(axis.title.y = element_text(size = axis_led_size),axis.text.y = element_text(size=axis_text_size),axis.text.x = element_text(size=axis_text_size),axis.title.x = element_blank(),legend.title = element_text(size = legnd_tit_size),legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches"))
+bp
+```
+
+Maybe check LC clone shared between Samples?
+```{r}
+sub_meta = ovp_comb_clone %>% select(Sample, receptor_type, cloneId,aaSeqCDR3,allVHitsWithScore,allDHitsWithScore,allJHitsWithScore) %>% filter(receptor_type %in% c("IGH","IGK","IGL"))
+
+shared_clones <- sub_meta %>%
+  group_by(receptor_type, aaSeqCDR3) %>%
+  summarize(
+    samples_with_clone = n_distinct(Sample),
+    total_samples = n_distinct(df$Sample)  # Total unique samples in the dataset
+  ) %>%
+  filter(samples_with_clone == total_samples) %>%  # Filter to keep only shared clones
+  group_by(receptor_type) %>%
+  summarize(shared_clone_count = n())
+```
+
+```{r}
+shared_clones <- sub_meta %>%
+  group_by(receptor_type, aaSeqCDR3) %>%
+  summarize(
+    samples_with_clone = n_distinct(Sample),
+    total_samples = n_distinct(df$Sample)) %>% filter(samples_with_clone > 2)
+
+shared_clones %>% group_by(receptor_type) %>% summarise(shared_clone_count = n())
+```
+
+
+
+# Sup Fig: number of reads
+```{r}
+# Specify the output folder
+output_folder <- "./figures/LR_QC"
+
+# Check if the output folder exists; if not, create it
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)
+}
+
+reads_sum = read.csv("../output_files/Reads_summary_LR.csv")[,1:6]
+# colnames(reads_sum) = c("ONT sequence", "post-basecall", "R2C2", "R2C2+UMI", "ovp whitelist")
+colnames(reads_sum)[6] = "ovp_whitelist"
+reads_sum_long <- reads_sum %>%
+  pivot_longer(cols = c(ONT_sequence, ONT_basecall, R2C2, R2C2_UMI, ovp_whitelist), 
+               names_to = "Read_Type", 
+               values_to = "Read_Count")
+reads_sum_long$Read_Type = factor(reads_sum_long$Read_Type, levels = c("ONT_sequence","ONT_basecall","R2C2","R2C2_UMI","ovp_whitelist"))
+reads_sum_long$Sample = factor(reads_sum_long$Sample, levels = c("Mock&D3PI","D7PI","D10PI","D14PI","D21PI"))
+# Create the bar plot
+# read_type_color = c("ONT sequence"="#64B0D1","post-basecall"="#267B9A","R2C2"="#6174AE","R2C2+UMI" = "#856AAD","ovp whitelist"="#BA5D88")
+read_type_color = c("ONT_sequence"="#64B0D1","ONT_basecall"="#267B9A","R2C2"="#6174AE","R2C2_UMI" = "#856AAD","ovp_whitelist"="#BA5D88")
+bp = ggplot(reads_sum_long, aes(x = Sample, y = Read_Count, fill = Read_Type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs( x = "Sample", y = "Number of Reads") + scale_fill_manual(values = read_type_color) +
+  theme_bw() + theme(axis.title.x = element_blank(),axis.text.x = element_text(size = axis_text_size,angle = 45,hjust = 1), axis.text.y = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size),
+                                                                   legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches"))
+bp
+ggsave(bp, filename = file.path(output_folder,"Rplot_Number_reads_LR_barplot_Legend.pdf"),width = 2,height = 1.5,dpi = 600)
+# without legend
+bp = bp + theme(legend.position = "None")
+ggsave(bp, filename = file.path(output_folder,"Rplot_Number_reads_LR_barplot.pdf"),width = 2,height = 1.5,dpi = 600)
+
+```
+
+## Sup Fig: num of beads have clones
+```{r}
+new_new_demul = comb_df %>% filter(Index %in% filter_alltp_meta$Index)
+new_new_clone_beads = new_new_demul %>% group_by(Sample) %>% summarise(TRB = sum(num_clones_TRB,na.rm = T), TRA = sum(num_clones_TRA,na.rm = T),IGH = sum(num_clones_IGH,na.rm = T),IGK = sum(num_clones_IGK,na.rm = T),IGL = sum(num_clones_IGL,na.rm = T)) %>% gather(key = "clono_type",value = "num_beads",TRB:IGL) %>% mutate(method = "Lev1_demul")
+
+new_new_clone_beads$Sample = factor(new_new_clone_beads$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+new_new_clone_beads$clono_type = factor(new_new_clone_beads$clono_type, levels = c("IGH","IGK","IGL","TRB","TRA"))
+# barplot
+# ggtitle("# beads with clone")
+p = ggplot(new_new_clone_beads, aes(x = Sample, y = num_beads, fill=Sample)) + geom_col(position = "dodge") + facet_grid(~ clono_type) + scale_fill_manual(values = sample_col_vec) +theme_bw()+theme(axis.text = element_text(size = axis_text_size),legend.position = "none",axis.text.x =element_blank(),strip.text.x = element_text(size = 8),axis.title.x = element_blank(),axis.title.y = element_text(size = axis_led_size))
+p
+ggsave(p, filename = "./figures/LR_QC/Rplot_num_beads_wthClone_ovpAnndata.pdf",width = 8,height = 4,dpi = 600)
+ggsave(p, filename = "./figures/LR_QC/Rplot_num_beads_wthClone_ovpAnndata.png",width = 8,height = 4,dpi = 600)
+```
+
+
+
+
+
+# Fig: Diversity
+```{r}
+# TRB
+file_path = "../output_files/immunarch_dir/TRB/"
+trb_mixcr <- repLoad(file_path)
+trb_mixcr$meta$Sample = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+# trb_mixcr$meta$Sample = lapply(trb_mixcr$meta$Sample, FUN = function(x) if (x != "Mock"){return(paste0(x,"PI"))}else{return(x)})
+trb_mixcr$meta$Sample = factor(trb_mixcr$meta$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+names(trb_mixcr$data) = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+trb_mixcr2 = trb_mixcr
+# re-normalize the data with overlap only the Anndata
+trb_comb_clone = ovp_comb_clone %>% filter(receptor_type == "TRB") %>% filter(Index %in% filter_alltp_meta$Index)
+# get Count
+trb_comb_count = trb_comb_clone %>% select(Sample, Index,cloneId) %>% unique() %>% group_by(cloneId, Sample) %>% summarise(n()) # May2 maybe just use barcode # count by barcode & UMI
+colnames(trb_comb_count) = c("cloneId","Sample","count")
+# replace
+for (tp in c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI")) {
+  # tp = "Mock"
+  print(tp)
+  tmp = trb_mixcr$data[[tp]] # from Mixcr
+  tmp_count = trb_comb_count %>% filter(Sample == tp) %>% filter(cloneId %in% tmp$Clone.ID)
+  rownames(tmp_count) = tmp_count$cloneId
+  tmp_count$prop = tmp_count$count/sum(tmp_count$count)
+  ## Find match
+  tmp = tmp %>% filter(Clone.ID %in% tmp_count$cloneId)
+  print(sum(tmp_count$cloneId == tmp$Clone.ID))
+  # change count
+  tmp$Clones = tmp_count$count
+  # change Proportion
+  tmp$Proportion = tmp_count$prop
+  trb_mixcr$data[[tp]] = tmp
+  # break
+}
+
+# TRA
+file_path = "../output_files/immunarch_dir/TRA/"
+tra_mixcr <- repLoad(file_path)
+tra_mixcr$meta$Sample = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+# tra_mixcr$meta$Sample = lapply(tra_mixcr$meta$Sample, FUN = function(x) if (x != "Mock"){return(paste0(x,"PI"))}else{return(x)})
+tra_mixcr$meta$Sample = factor(tra_mixcr$meta$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+names(tra_mixcr$data) = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+tra_mixcr2 = tra_mixcr
+# re-normalize the data with overlap only the Anndata
+tra_comb_clone = ovp_comb_clone %>% filter(receptor_type == "TRA") %>% filter(Index %in% filter_alltp_meta$Index)
+# get Count
+tra_comb_count = tra_comb_clone %>% select(Sample, Index,cloneId) %>% unique() %>% group_by(cloneId, Sample) %>% summarise(n()) # May2 maybe just use barcode # count by barcode & UMI
+colnames(tra_comb_count) = c("cloneId","Sample","count")
+# replace
+for (tp in c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI")) {
+  # tp = "Mock"
+  print(tp)
+  tmp = tra_mixcr$data[[tp]] # from Mixcr
+  tmp_count = tra_comb_count %>% filter(Sample == tp) %>% filter(cloneId %in% tmp$Clone.ID)
+  rownames(tmp_count) = tmp_count$cloneId
+  tmp_count$prop = tmp_count$count/sum(tmp_count$count)
+  ## Find match
+  tmp = tmp %>% filter(Clone.ID %in% tmp_count$cloneId)
+  print(sum(tmp_count$cloneId == tmp$Clone.ID))
+  # change count
+  tmp$Clones = tmp_count$count
+  # change Proportion
+  tmp$Proportion = tmp_count$prop
+  tra_mixcr$data[[tp]] = tmp
+  # break
+}
+
+# IGH
+file_path = "../output_files/immunarch_dir/IGH/"
+igh_mixcr <- repLoad(file_path)
+igh_mixcr$meta$Sample = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+# igh_mixcr$meta$Sample = lapply(igh_mixcr$meta$Sample, FUN = function(x) if (x != "Mock"){return(paste0(x,"PI"))}else{return(x)})
+igh_mixcr$meta$Sample = factor(igh_mixcr$meta$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+names(igh_mixcr$data) = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+igh_mixcr2 = igh_mixcr
+# re-normalize the data with overlap only the Anndata
+igh_comb_clone = ovp_comb_clone %>% filter(receptor_type == "IGH") %>% filter(Index %in% filter_alltp_meta$Index)
+# get Count
+igh_comb_count = igh_comb_clone %>% select(Sample, Index,cloneId) %>% unique() %>% group_by(cloneId, Sample) %>% summarise(n()) # May2 maybe just use barcode # count by barcode & UMI
+colnames(igh_comb_count) = c("cloneId","Sample","count")
+# replace
+for (tp in c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI")) {
+  # tp = "Mock"
+  print(tp)
+  tmp = igh_mixcr$data[[tp]] # from Mixcr
+  tmp_count = igh_comb_count %>% filter(Sample == tp) %>% filter(cloneId %in% tmp$Clone.ID)
+  rownames(tmp_count) = tmp_count$cloneId
+  tmp_count$prop = tmp_count$count/sum(tmp_count$count)
+  ## Find match
+  tmp = tmp %>% filter(Clone.ID %in% tmp_count$cloneId)
+  print(sum(tmp_count$cloneId == tmp$Clone.ID))
+  # change count
+  tmp$Clones = tmp_count$count
+  # change Proportion
+  tmp$Proportion = tmp_count$prop
+  igh_mixcr$data[[tp]] = tmp
+  # break
+}
+
+# IGK
+file_path = "../output_files/immunarch_dir/IGK/"
+igk_mixcr <- repLoad(file_path)
+igk_mixcr$meta$Sample = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+# igk_mixcr$meta$Sample = lapply(igk_mixcr$meta$Sample, FUN = function(x) if (x != "Mock"){return(paste0(x,"PI"))}else{return(x)})
+igk_mixcr$meta$Sample = factor(igk_mixcr$meta$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+names(igk_mixcr$data) = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+igk_mixcr2 = igk_mixcr
+# re-normalize the data with overlap only the Anndata
+igk_comb_clone = ovp_comb_clone %>% filter(receptor_type == "IGK") %>% filter(Index %in% filter_alltp_meta$Index)
+# get Count
+igk_comb_count = igk_comb_clone %>% select(Sample, Index,cloneId) %>% unique() %>% group_by(cloneId, Sample) %>% summarise(n()) # May2 maybe just use barcode # count by barcode & UMI
+colnames(igk_comb_count) = c("cloneId","Sample","count")
+# replace
+for (tp in c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI")) {
+  # tp = "Mock"
+  print(tp)
+  tmp = igk_mixcr$data[[tp]] # from Mixcr
+  tmp_count = igk_comb_count %>% filter(Sample == tp) %>% filter(cloneId %in% tmp$Clone.ID)
+  rownames(tmp_count) = tmp_count$cloneId
+  tmp_count$prop = tmp_count$count/sum(tmp_count$count)
+  ## Find match
+  tmp = tmp %>% filter(Clone.ID %in% tmp_count$cloneId)
+  print(sum(tmp_count$cloneId == tmp$Clone.ID))
+  # change count
+  tmp$Clones = tmp_count$count
+  # change Proportion
+  tmp$Proportion = tmp_count$prop
+  igk_mixcr$data[[tp]] = tmp
+  # break
+}
+
+# IGL
+file_path = "../output_files/immunarch_dir/IGL/"
+igl_mixcr <- repLoad(file_path)
+igl_mixcr$meta$Sample = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+# igl_mixcr$meta$Sample = lapply(igl_mixcr$meta$Sample, FUN = function(x) if (x != "Mock"){return(paste0(x,"PI"))}else{return(x)})
+igl_mixcr$meta$Sample = factor(igl_mixcr$meta$Sample, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+names(igl_mixcr$data) = c("D10PI","D14PI","D21PI","D3PI","D7PI","Mock")
+igl_mixcr2 = igl_mixcr
+# re-normalize the data with overlap only the Anndata
+igl_comb_clone = ovp_comb_clone %>% filter(receptor_type == "IGL") %>% filter(Index %in% filter_alltp_meta$Index)
+# get Count
+igl_comb_count = igl_comb_clone %>% select(Sample, Index,cloneId) %>% unique() %>% group_by(cloneId, Sample) %>% summarise(n()) # May2 maybe just use barcode # count by barcode & UMI
+colnames(igl_comb_count) = c("cloneId","Sample","count")
+# replace
+for (tp in c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI")) {
+  # tp = "Mock"
+  print(tp)
+  tmp = igl_mixcr$data[[tp]] # from Mixcr
+  tmp_count = igl_comb_count %>% filter(Sample == tp) %>% filter(cloneId %in% tmp$Clone.ID)
+  rownames(tmp_count) = tmp_count$cloneId
+  tmp_count$prop = tmp_count$count/sum(tmp_count$count)
+  ## Find match
+  tmp = tmp %>% filter(Clone.ID %in% tmp_count$cloneId)
+  print(sum(tmp_count$cloneId == tmp$Clone.ID))
+  # change count
+  tmp$Clones = tmp_count$count
+  # change Proportion
+  tmp$Proportion = tmp_count$prop
+  igl_mixcr$data[[tp]] = tmp
+}
+```
+calculate Diversity
+Gini index
+```{r}
+rec_mixcr = list('IGH' = igh_mixcr, "IGL" = igl_mixcr, "IGK" = igk_mixcr, "TRB" = trb_mixcr, "TRA" = tra_mixcr)
+div_list = list()
+for (i in names(rec_mixcr)){
+  print(i)
+  tmp_div = repDiversity(rec_mixcr[[i]]$data, 'gini', .col = "aa+v")
+  tmp_div = as.data.frame(tmp_div)
+  tmp_div$timepoint = rownames(tmp_div)
+  colnames(tmp_div) = c("Gini","timepoint")
+  tmp_div$clono_type = i
+  div_list[[i]] = tmp_div
+}
+div_df = do.call(rbind, div_list)
+```
+Plot in diversity
+```{r}
+div_df$timepoint = factor(div_df$timepoint, levels = c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI"))
+div_df$clono_type = factor(div_df$clono_type, levels = c("IGH","IGK","IGL","TRB","TRA"))
+bp = ggplot(div_df, aes(x = clono_type, y = Gini, fill = timepoint)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  # scale_y_continuous(labels = scales::count) +
+  labs(y = "Gini Index", x = "Sample") +  scale_fill_manual(values = sample_col_vec) + scale_y_continuous(limits = c(0,1)) +
+  theme_bw() + theme(axis.title.x = element_blank(),axis.text.x = element_text(size = axis_text_size), axis.text.y = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size),
+                                                                   legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches"))
+bp
+# save
+ggsave(bp, filename = "./figures/LR_QC/Rplot_Clone_diversity_gini_barplot_Legend.pdf",width = 2,height = 1.5,dpi = 600)
+# without legend
+bp = bp + theme(legend.position = "None")
+ggsave(bp, filename = "./figures/LR_QC/Rplot_Clone_diversity_gini_barplot.pdf",width = 2.5,height = 1.8,dpi = 600)
+```
+
+
+
+
+
+# Fig: Entropy
+```{r}
+# Define a function to parse the chains and their counts
+parse_chains <- function(chain_column) {
+  chain_list <- strsplit(chain_column, ";")[[1]]
+  chain_data <- lapply(chain_list, function(x) {
+    parts <- strsplit(x, "\\(")[[1]]
+    chain <- parts[1]
+    count <- as.numeric(gsub("\\)", "", parts[2]))
+    return(rep(chain, count))
+  })
+  return(unlist(chain_data))
+}
+
+# Define a function to calculate entropy for each row
+calculate_row_entropy <- function(heavy_chains, light_chains) {
+  heavy_parsed <- parse_chains(heavy_chains)
+  light_parsed <- parse_chains(light_chains)
+  
+  # Get all combinations of heavy and light chains for the row
+  combinations <- expand.grid(Heavy_chain = heavy_parsed, Light_chain = light_parsed)
+  
+  # Calculate the frequency of each combination
+  combination_freq <- as.data.frame(table(combinations))
+  combination_freq$probability <- combination_freq$Freq / sum(combination_freq$Freq)
+  
+  # Calculate entropy
+  entropy <- -sum(combination_freq$probability * log2(combination_freq$probability))
+  return(entropy)
+}
+```
+
+
+
+
+```{r}
+tmp_list = list()
+for (tp in c("Mock","D3PI","D7PI","D10PI","D14PI","D21PI")) {
+  print(tp)
+  barcode_pair = meta %>% filter(Sample == tp & num_clones_IGpair > 0) %>% .$barcode #899, which is correct
+  tmp_clone = ovp_comb_clone %>% filter(Sample == tp & grepl("IG",clono_type) & barcode %in% barcode_pair) %>% filter(!grepl("_",aaSeqCDR3)) # also filter out the unproductive ones
+  igh_barcode = tmp_clone %>% filter(receptor_type == "IGH") %>% select(barcode, cloneId) %>% unique()
+  # might have duplicate
+  tab_barcode = as.data.frame(table(igh_barcode$barcode))
+  table(tab_barcode$Freq)
+  tmp_pairHL_barcode = tab_barcode;colnames(tmp_pairHL_barcode) = c("barcode","tot_num_Hclones");tmp_pairHL_barcode = tmp_pairHL_barcode %>% mutate( Heavy_chains = NA, Light_chains = NA)
+
+for (i in 1:nrow(tmp_pairHL_barcode)) {
+  l = tmp_pairHL_barcode[i,"barcode"]
+  tmp_sele = tmp_clone %>% filter(barcode == l) %>% select(barcode, umi,receptor_type, cloneId) %>% unique() # forget about the CDR3
+  # for each cloneId
+  unq_hcid = tmp_sele %>% filter(receptor_type == "IGH") %>% .$cloneId %>% unique()
+  unq_lcid = tmp_sele %>% filter(receptor_type != "IGH") %>% .$cloneId %>% unique()
+  # heavy chain
+  heavy_vec = tmp_sele %>% filter(cloneId %in% unq_hcid) %>% .$cloneId
+  heavy_vec = sort(table(heavy_vec), decreasing = T)
+  hv = c()
+  for (l in 1:length(heavy_vec)) {
+    hv = c(hv, paste(names(heavy_vec)[l],"(",heavy_vec[l],")",sep = ""))
+  }
+  hv = paste(hv,collapse = ";")
+  tmp_pairHL_barcode[i,"Heavy_chains"] = hv
+  # same as light chain
+  light_vec = tmp_sele %>% filter(cloneId %in% unq_lcid) %>% .$cloneId
+  light_vec = sort(table(light_vec), decreasing = T)
+  lv = c()
+  for (l in 1:length(light_vec)) {
+    lv = c(lv, paste(names(light_vec)[l],"(",light_vec[l],")",sep = ""))
+  }
+  lv = paste(lv,collapse = ";")
+  tmp_pairHL_barcode[i,"Light_chains"] = lv
+  
+}
+# remove the ones Light_chains is NA
+tmp_pairHL_barcode = tmp_pairHL_barcode %>% filter(!grepl("NA",Light_chains))
+
+# Apply the entropy calculation function to each row
+tmp_pairHL_barcode$entropy <- mapply(calculate_row_entropy, tmp_pairHL_barcode$Heavy_chains, tmp_pairHL_barcode$Light_chains)
+tmp_pairHL_barcode$Sample = tp
+tmp_list[[tp]] = tmp_pairHL_barcode
+}
+whole_pairHL_barcode_df = do.call('rbind', tmp_list)
+
+# add a column of "tot_num_Lclones"
+whole_pairHL_barcode_df = whole_pairHL_barcode_df %>% mutate(tot_num_Lclones = (str_count(pattern = ";",Light_chains)+1))
+# let's give a 3 categories: unique_HL: 1*1; 1H2L: 1*2; 2H1L: 2*1; 2H2L: 2*2; multiple_HLs, 
+whole_pairHL_barcode_df = whole_pairHL_barcode_df %>% mutate(HL_combinations_cat = if_else(tot_num_Hclones == 1 & tot_num_Lclones == 1, "1H1L",
+                                                                                      if_else(tot_num_Hclones == 1 & tot_num_Lclones == 2, "1H2L",
+                                                                                           if_else(tot_num_Hclones == 2 & tot_num_Lclones == 1, "2H1L",
+                                                                                           if_else(tot_num_Hclones == 2 & tot_num_Lclones == 2, "2H2L", "multi HLs")))))
+
+whole_pairHL_barcode_df$Index = paste(whole_pairHL_barcode_df$barcode, whole_pairHL_barcode_df$Sample, sep = "_")
+write.csv(whole_pairHL_barcode_df[,c('Index','entropy')], file = paste0("../output_files/meta_allTP_pairHL_entropy.tsv"),row.names = F)
+
+# # Recode the 'Sample' column
+# whole_pairHL_barcode_df$Sample <- recode(whole_pairHL_barcode_df$Sample,
+#                                "Mock" = "Mock",
+#                                "D3PI" = "D3",
+#                                "D7PI" = "D7",
+#                                "D10PI" = "D10",
+#                                "D14PI" = "D14",
+#                                "D21PI" = "D21")
+# whole_pairHL_barcode_df$Sample = factor(whole_pairHL_barcode_df$Sample, levels = c("Mock","D3","D7","D10","D14","D21"))
+# 
+# HL_summ_df = whole_pairHL_barcode_df %>% group_by(Sample,HL_combinations_cat) %>% summarise(count = n())
+# HL_summ_df$Category = factor(HL_summ_df$HL_combinations_cat, levels = c("1H1L","1H2L","2H1L","2H2L","multi HLs"))
+# HL_summ_df = HL_summ_df %>% group_by(Sample) %>% mutate(prop = count / sum(count)) %>% ungroup()
+# # check stat
+# HL_summ_df %>% group_by(Category) %>% summarise(Mean = mean(prop))
+# 
+# # and color
+# col_vec = c("#00C726","#0795C6","#006CE1","#9B15ED","#AFAFAF")
+# 
+# bp = ggplot(HL_summ_df, aes(x = Sample, y = count, fill = Category)) +
+#   geom_bar(stat = "identity", position = "stack") +
+#   # scale_y_continuous(labels = scales::count) +
+#   labs(y = "Counts", x = "Sample") +  scale_fill_manual(values = col_vec) +
+#   theme_bw() + theme(axis.title.x = element_blank(),axis.text.x = element_text(size = axis_text_size), axis.text.y = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size),
+#                                                                    legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches"))
+# bp
+# ggsave(bp, filename = "../figures/LR_QC/Rplot_pairHL_combinations_AllTP_Counts_barplot_Legend.pdf",width = 2,height = 2,dpi = 600)
+# bp =  bp + theme(legend.position = "None")
+# ggsave(bp, filename = "../figures/LR_QC/Rplot_pairHL_combinations_AllTP_Counts_barplot.pdf",width = 2,height = 1.5,dpi = 600)
+# # Proportion
+# bp = ggplot(HL_summ_df, aes(x = Sample, y = prop, fill = Category)) +
+#   geom_bar(stat = "identity", position = "stack") +
+#   scale_y_continuous(labels = scales::percent) +
+#   labs(y = "Proportions", x = "Sample") +  scale_fill_manual(values = col_vec) +
+#   theme_bw() + theme(axis.title.x = element_blank(),axis.text.x = element_text(size = axis_text_size,angle = 60,hjust = 1), axis.text.y = element_text(size = axis_text_size),axis.title.y = element_text(size = axis_led_size),
+#                                                                    legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches"))
+# bp
+# ggsave(bp, filename = "../figures/LR_QC/Rplot_pairHL_combinations_AllTP_Composition_barplot_Legend.pdf",width = 2,height = 1.5,dpi = 600)
+# # without legend
+# bp = bp + theme(legend.position = "None")
+# ggsave(bp, filename = "../figures/LR_QC/Rplot_pairHL_combinations_AllTP_Composition_barplot.pdf",width = 2,height = 1.5,dpi = 600)
+```
+
+
+
+
+# Supp Fig: cell types by Regions
+```{r}
+df_summary = meta %>% group_by(Region, Refine_celltypes) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  group_by(Region) %>%
+  mutate(fraction = count / sum(count))
+
+df_summary$Region = factor(df_summary$Region, levels = c("Conduit","Germinal Center","Outer Cortex", "Inner Cortex", "Capsule","Afferent lymph vessel","Fat Tissue","Medulla"))
+# plot the composition barplot
+
+p = ggplot(df_summary, aes(fill=Refine_celltypes, x = Region, y = fraction)) + geom_bar(position = "fill",stat = "identity") + theme_bw() + ggtitle("IGH isoform composition") + ylab("Composition (%)") + 
+  theme(axis.text.y = element_text(size = axis_text_size),axis.title.x = element_blank(),axis.text.x = element_text(angle =0,hjust = 0.5,size = axis_text_size),legend.text = element_text(size = legnd_text_size),legend.title = element_text(size = legnd_tit_size),
+        title = element_blank(),legend.key.size = unit(0.1,"inches")) + scale_fill_manual(values = celltype_col_vec)
+p = p + theme(legend.position = "None")
+
+ggsave(plot=p,filename="./figures/SR_QC/Rplot_Composition_Celltype_Region.pdf",width = 2.5,height = 1.8,dpi = 600)
+
+```
+

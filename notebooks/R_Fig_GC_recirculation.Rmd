@@ -1,0 +1,177 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-01-21"
+---
+
+```{r}
+options(stringsAsFactors = F)
+library(dplyr)
+library(stringr)
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+library(Biostrings)
+library(tidyr)
+library(stringdist)
+library(cowplot)
+library(immunarch)
+library(conflicted)
+library(tidyverse)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflicts_prefer(base::as.data.frame)
+```
+
+```{r}
+# set some aesthetic parameter
+sample_col_vec = c("Mock"="#1f77b4","D3PI"="#9CA327","D7PI"="#ff7f0e","D10PI"="#2ca02c","D14PI"="#d62728","D21PI"="#9467bd")
+iso_col_vec = c("IGHM" = "#881800", "IGHD" = "black", "IGHG3" = "#FF0000", "IGHG1" = "#F99006", "IGHG2B" = "#009B49", "IGHG2C" = "#7030A0", "IGHE" = "#B1057E", "IGHGA" = "blue")
+rec_col_vec = c("IGH" = "#ED2015", "IGK" = "#007CFF", "IGL" = "#009342","TRA" = "#F39C12","TRB" = "#8E44AD")
+axis_led_size = 8;axis_text_size = 6
+legnd_tit_size = 8;legnd_text_size = 6
+```
+
+
+# Fig: 6a multipleGC
+```{r}
+assigned_dflist = list()
+for (tp in c("D10PI","D14PI","D21PI")) {
+  tmp_assigned = read.csv(paste0("../output_files/",tp,"_IGH_clones_All_productive_multiple_GC_assigned.csv"),header = T)
+  tmp_assigned$Sample = str_replace(tp,pattern = "PI","")
+  assigned_dflist[[tp]] = tmp_assigned
+}
+assigned_df = do.call("rbind",assigned_dflist)
+# change the name from single GC and non-GC to single GC or non-GC
+# Figures composition
+plot_df = assigned_df %>% group_by(Sample, GC_type) %>% summarise(count = n()) %>% group_by(Sample) %>% mutate(percentage = count / sum(count) * 100)
+plot_df[plot_df$GC_type=="Single GC and non-GC","GC_type"] = "Single GC or non-GC"
+bp = ggplot(plot_df, aes(x = Sample, y = percentage, fill = GC_type)) +
+  geom_bar(stat = "identity", position = "fill") + scale_fill_manual(values = c("#c68226","#2f4858")) +
+  theme_bw() +
+  labs(title = "Composition of GC Types by Sample",
+       x = "Sample",
+       y = "Fraction",
+       fill = "GC Type") +
+  theme(axis.text.y = element_text(size = axis_text_size),axis.title.x = element_blank(),axis.text.x = element_text(angle =0,hjust = 0.5,size = axis_text_size),legend.text = element_text(size = legnd_text_size),legend.title = element_text(size = legnd_tit_size),
+        title = element_blank(),legend.key.size = unit(0.1,"inches"))
+bp
+ggsave(plot=bp,filename="./figures/Fig_GC_recirculation/Rplot_fraction_Clones_multipleGC_Legend.pdf",width = 1,height = 2,dpi = 600)
+# without legend
+p = bp + theme(legend.position = "None")
+ggsave(plot=p,filename="./figures/Fig_GC_recirculation/Rplot_fraction_Clones_multipleGC.pdf",width = 1,height = 2,dpi = 600)
+```
+
+# Fig: 6b
+```{r}
+sample_col_vec = c("D10"="#2ca02c","D14"="#d62728","D21"="#9467bd")
+plot_df = assigned_df %>% filter(num_of_GCs != 0) %>% group_by(Sample, num_of_GCs) %>% summarise(count = n()) %>% group_by(Sample) %>% mutate(percentage = count / sum(count) * 100)
+plot_df$num_of_GCs = as.character(plot_df$num_of_GCs)
+p = ggplot(plot_df, aes(x = num_of_GCs, y = percentage, fill = Sample)) + geom_col(position = "dodge")+scale_y_continuous(limits = c(0,100)) +scale_x_discrete(limits = c("1","2","3","4","5","6","7")) + scale_fill_manual(values = sample_col_vec) +theme_bw()+theme(axis.text = element_text(size = axis_text_size),strip.text.x = element_text(size = 8),axis.title.y = element_text(size = axis_led_size),axis.title.x = element_blank(),legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches"))
+p
+ggsave(p, filename = "./figures/Fig_GC_recirculation/Rplot_fraction_Clones_num_of_GC_Legend.pdf",width = 3,height = 2,dpi = 600)
+p = p + theme(legend.position = "None")
+ggsave(p, filename = "./figures/Fig_GC_recirculation/Rplot_fraction_Clones_num_of_GC.pdf",width = 3,height = 2,dpi = 600)
+```
+On numbers
+```{r}
+sample_col_vec = c("D10"="#2ca02c","D14"="#d62728","D21"="#9467bd")
+plot_df = assigned_df %>% filter(num_of_GCs != 0) %>% group_by(Sample, num_of_GCs) %>% summarise(count = n()) 
+plot_df$num_of_GCs = as.character(plot_df$num_of_GCs)
+p = ggplot(plot_df, aes(x = num_of_GCs, y = count, fill = Sample)) + geom_col(position = "dodge")+scale_y_continuous(limits = c(0,500)) +scale_x_discrete(limits = c("1","2","3","4","5","6","7")) + scale_fill_manual(values = sample_col_vec) +theme_bw()+theme(axis.text = element_text(size = axis_text_size),strip.text.x = element_text(size = 8),axis.title.y = element_text(size = axis_led_size),axis.title.x = element_blank(),legend.title = element_text(size = legnd_tit_size), legend.text = element_text(size = legnd_text_size),legend.key.size = unit(0.1,"inches"))
+p
+ggsave(p, filename = "./figures/Fig_GC_recirculation/Rplot_Counts_Clones_num_of_GC_Legend.pdf",width = 2.5,height = 2,dpi = 600)
+p = p + theme(legend.position = "None")
+ggsave(p, filename = "./figures/Fig_GC_recirculation/Rplot_Counts_Clones_num_of_GC.pdf",width = 2.5,height = 2,dpi = 600)
+```
+
+
+
+Quest: How many clones for each GC it has
+```{r}
+gc_count_list = {}
+for (i in c("D10","D14","D21")) {
+  tmp_df = assigned_df %>% filter(Sample == i)
+tmp_gc_counts <- tmp_df %>%
+  # Split the comma-separated values in GC_assigned into multiple rows
+  separate_rows(GC_assigned, sep = ",") %>%
+  # Group by GC and count distinct clones in each GC
+  group_by(GC_assigned) %>%
+  summarize(num_clones = n_distinct(Clone.ID)) %>% mutate(Sample = i)
+gc_count_list[[i]] = tmp_gc_counts
+}
+gc_count_df = do.call("rbind",gc_count_list)
+gc_count_df = gc_count_df %>% filter(GC_assigned != "non-GC")
+summary(gc_count_df)
+```
+
+```{r}
+# boxplot
+my_comparisons <- list(c("D10","D14"),c("D14","D21"))
+p <- ggboxplot(gc_count_df, x = "Sample", y = "num_clones", color = "Sample", add = "jitter", title = "",size = 0.5,add.params = list(size = 0.1),width = 0.8) 
+p <- p + stat_compare_means(comparisons = my_comparisons, method = "wilcox.test",size = 1) + xlab("") +scale_color_manual(values = sample_col_vec) + theme_bw() + theme( axis.text = element_text(size = axis_text_size), axis.title = element_text(size = axis_led_size), legend.position = "None")
+p
+```
+
+
+Quest: can you also calculate the diversity for each GC
+
+Quest: If followed by poisson distributions
+```{r}
+# tmp_df = assigned_df %>% filter(num_of_GCs != 0)
+tmp_d14 = assigned_df %>% filter(Sample == "D10")
+
+# 1. Create observed frequency table
+obs_counts <- table(tmp_d14$num_of_GCs)
+
+# 2. Estimate lambda (the Poisson mean) from the data
+lambda_hat <- mean(tmp_d14$num_of_GCs)
+lambda_hat
+
+# 3. Compute Poisson probabilities for each observed count
+#    Note: as.numeric(names(obs_counts)) extracts the count values
+pois_probs <- dpois(x = as.numeric(names(obs_counts)), lambda = lambda_hat)
+pois_probs
+# 4. Expected frequencies = total observations * Poisson probabilities
+total_obs <- sum(obs_counts)
+exp_counts <- total_obs * pois_probs
+
+# 5. Perform a chi-squared goodness-of-fit test
+#    'p = pois_probs' is the null hypothesis distribution
+#    Use 'rescale.p = TRUE' to ensure probabilities sum to 1
+chisq_test_result <- chisq.test(x = obs_counts, p = pois_probs, rescale.p = TRUE)
+
+chisq_test_result
+
+p_at_least_one <- 1 - exp(-lambda_hat)
+p_at_least_one
+```
+
+```{r}
+library(vcd)
+for (i in c("D10","D14","D21")) {
+  # tmp_df = assigned_df %>% filter(Sample == i)
+  tmp_df = assigned_df %>% filter(Sample == i) %>% filter(num_of_GCs != 0)
+  gf <- goodfit(tmp_df$num_of_GCs, type = "poisson")
+# Display the goodness-of-fit results
+  summary(gf)
+print(gf$par$lambda)
+plot(gf)
+}
+
+```
+
+
+```{r}
+freq_table <- table(tmp_d14$num_of_GCs)
+count_vals <- as.numeric(names(freq_table))   # The distinct GC counts
+counts     <- as.numeric(freq_table)          # How many clones have that count
+
+mu <- sum(count_vals * counts) / sum(counts)
+mu
+```
+
+
+
+
+
